@@ -1,0 +1,117 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /Outlines 4 0 R /PageMode /UseOutlines /PageLabels << /Nums [0 << /S /r >> 2 << /S /D >>] >> >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [5 0 R 7 0 R 9 0 R 11 0 R 13 0 R 15 0 R] /Count 6 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Outlines /First 17 0 R /Last 21 0 R /Count 5 >>
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 97 >>
+stream
+BT /F1 24 Tf 72 700 Td (Preface page) Tj ET
+BT /F1 14 Tf 72 380 Td (Lower half of the page) Tj ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 8 0 R >>
+endobj
+8 0 obj
+<< /Length 98 >>
+stream
+BT /F1 24 Tf 72 700 Td (Contents page) Tj ET
+BT /F1 14 Tf 72 380 Td (Lower half of the page) Tj ET
+endstream
+endobj
+9 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 10 0 R >>
+endobj
+10 0 obj
+<< /Length 103 >>
+stream
+BT /F1 24 Tf 72 700 Td (Chapter one begins) Tj ET
+BT /F1 14 Tf 72 380 Td (Lower half of the page) Tj ET
+endstream
+endobj
+11 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 12 0 R >>
+endobj
+12 0 obj
+<< /Length 106 >>
+stream
+BT /F1 24 Tf 72 700 Td (Section one point one) Tj ET
+BT /F1 14 Tf 72 380 Td (Lower half of the page) Tj ET
+endstream
+endobj
+13 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 14 0 R >>
+endobj
+14 0 obj
+<< /Length 106 >>
+stream
+BT /F1 24 Tf 72 700 Td (Section one point two) Tj ET
+BT /F1 14 Tf 72 380 Td (Lower half of the page) Tj ET
+endstream
+endobj
+15 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 16 0 R >>
+endobj
+16 0 obj
+<< /Length 103 >>
+stream
+BT /F1 24 Tf 72 700 Td (Chapter two begins) Tj ET
+BT /F1 14 Tf 72 380 Td (Lower half of the page) Tj ET
+endstream
+endobj
+17 0 obj
+<< /Title (Preface) /Parent 4 0 R /Next 18 0 R /Dest [5 0 R /XYZ 0 792 null] >>
+endobj
+18 0 obj
+<< /Title (Chapter 1. Beginnings) /Parent 4 0 R /Prev 17 0 R /Next 21 0 R /First 19 0 R /Last 20 0 R /Count 2 /Dest [9 0 R /XYZ 0 792 null] >>
+endobj
+19 0 obj
+<< /Title (Section 1.1) /Parent 18 0 R /Next 20 0 R /Dest [11 0 R /XYZ 0 792 null] >>
+endobj
+20 0 obj
+<< /Title (Section 1.2) /Parent 18 0 R /Prev 19 0 R /Dest [13 0 R /XYZ 0 400 null] >>
+endobj
+21 0 obj
+<< /Title (Chapter 2. Endings) /Parent 4 0 R /Prev 18 0 R /Dest [15 0 R /XYZ 0 792 null] >>
+endobj
+xref
+0 22
+0000000000 65535 f 
+0000000009 00000 n 
+0000000151 00000 n 
+0000000241 00000 n 
+0000000311 00000 n 
+0000000384 00000 n 
+0000000510 00000 n 
+0000000657 00000 n 
+0000000783 00000 n 
+0000000931 00000 n 
+0000001058 00000 n 
+0000001213 00000 n 
+0000001341 00000 n 
+0000001499 00000 n 
+0000001627 00000 n 
+0000001785 00000 n 
+0000001913 00000 n 
+0000002068 00000 n 
+0000002164 00000 n 
+0000002323 00000 n 
+0000002425 00000 n 
+0000002527 00000 n 
+trailer
+<< /Size 22 /Root 1 0 R >>
+startxref
+2635
+%%EOF

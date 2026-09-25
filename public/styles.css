@@ -164,19 +164,21 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 }
 .icon-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
 .icon-btn:disabled { opacity: 0.35; cursor: default; }
+.icon-btn.active { color: var(--accent); }
 
 .doc-title { flex: 1; min-width: 0; margin: 0; font-size: 0.925rem; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .toolbar-group { display: flex; align-items: center; gap: 0.15rem; background: var(--surface-2); border-radius: 8px; padding: 2px; }
 .page-indicator { display: flex; align-items: center; gap: 0.3rem; font-size: 0.85rem; color: var(--text-dim); padding: 0 0.2rem; }
 #page-input {
-  width: 3.2em; padding: 0.2rem 0.3rem; text-align: right;
+  width: 3.6em; padding: 0.2rem 0.3rem; text-align: right;
   border: 1px solid transparent; border-radius: 5px;
   background: var(--surface); color: var(--text); font: inherit; font-size: 0.85rem;
   -moz-appearance: textfield;
 }
 #page-input::-webkit-inner-spin-button, #page-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 #page-input:focus { border-color: var(--accent); outline: none; }
+.page-physical { font-size: 0.75rem; opacity: 0.8; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .zoom-level { font-size: 0.78rem; color: var(--text-dim); min-width: 3.5em; text-align: center; font-variant-numeric: tabular-nums; }
 
 .save-badge {
@@ -191,8 +193,54 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
   100% { opacity: 0; transform: translate(-50%, -4px); }
 }
 
+/* Outline on the left, pages on the right. The outline pushes the pages over rather
+   than covering them; pages are sized by zoom, not width, so nothing reflows. */
+.reader-body { flex: 1; min-height: 0; display: flex; }
+
+.outline {
+  flex: none;
+  width: 280px;
+  display: flex; flex-direction: column;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  z-index: 10;
+}
+.outline-head {
+  flex: none;
+  padding: 0.7rem 0.9rem 0.5rem;
+  font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim);
+}
+.outline-tree, .outline-tree ul { list-style: none; margin: 0; padding: 0; }
+.outline-tree { flex: 1; overflow-y: auto; padding: 0 0.4rem 1.5rem; overscroll-behavior: contain; }
+.outline-tree ul { padding-left: 0.85rem; }
+.outline-row { display: flex; align-items: flex-start; gap: 0.1rem; border-radius: 6px; }
+.outline-row:hover { background: var(--surface-2); }
+.outline-row.active { background: var(--accent-soft); }
+.outline-row.active .outline-link { color: var(--accent); font-weight: 550; }
+.outline-toggle, .outline-spacer { flex: none; width: 20px; height: 26px; }
+.outline-toggle {
+  display: grid; place-items: center; padding: 0;
+  border: none; background: none; color: var(--text-dim); border-radius: 5px;
+}
+.outline-toggle:hover { color: var(--text); }
+.outline-toggle svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2.4; transition: transform 0.12s; }
+.outline-item[aria-expanded="true"] > .outline-row .outline-toggle svg { transform: rotate(90deg); }
+.outline-item[aria-expanded="false"] > ul { display: none; }
+.outline-link {
+  flex: 1; min-width: 0;
+  display: flex; align-items: baseline; gap: 0.5rem;
+  padding: 0.3rem 0.4rem 0.3rem 0.1rem;
+  border: none; background: none; text-align: left;
+  font: inherit; font-size: 0.82rem; line-height: 1.3; color: var(--text);
+}
+.outline-tree > .outline-item > .outline-row .outline-link { font-weight: 550; }
+.outline-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.outline-page { flex: none; font-size: 0.72rem; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.outline-link:focus-visible, .outline-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
 .viewer-container {
   flex: 1;
+  min-width: 0;
   overflow: auto;
   position: relative;
   padding: 1.25rem 0 3rem;
@@ -260,6 +308,13 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
   font-size: 0.68rem; color: #999; background: rgb(255 255 255 / 0.85);
   padding: 1px 6px; border-radius: 4px; pointer-events: none; user-select: none;
 }
+/* Dark pages: invert the rendered page, then rotate hues back so photos and coloured
+   figures keep roughly their own colours. Stopping short of a full invert lands paper
+   on a soft charcoal rather than pure black. Only the canvas is filtered, so the text
+   layer, selection and lookup highlight keep their normal colours. */
+#reader.pages-dark .page { background: #1d1d1d; }
+#reader.pages-dark .page canvas { filter: invert(0.9) hue-rotate(180deg); }
+#reader.pages-dark .page-number-tag { color: #aaa; background: rgb(0 0 0 / 0.6); }
 .page.placeholder { display: grid; place-items: center; background: var(--surface-2); box-shadow: none; border: 1px solid var(--border); }
 .page.placeholder::after { content: ""; width: 22px; height: 22px; border: 2px solid var(--border); border-top-color: var(--text-dim); border-radius: 50%; animation: spin 0.7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -478,4 +533,10 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
   .doc-title { display: none; }
   .panel, .history, .recaps { right: 8px; left: 8px; bottom: 8px; width: auto; }
   .recap-range { right: 8px; left: 8px; width: auto; }
+  /* No room to push the pages aside on a phone: float over them instead. */
+  .outline {
+    position: fixed; top: var(--toolbar-h); bottom: 0; left: 0;
+    width: min(300px, 85vw); box-shadow: var(--shadow-lg); z-index: 40;
+  }
+  .page-physical { display: none; }
 }

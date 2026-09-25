@@ -5,14 +5,15 @@ import crypto from 'node:crypto';
 import express from 'express';
 import multer from 'multer';
 
-import { PORT, PDF_DIR, PUBLIC_DIR, ROOT, GEMINI_API_KEY, GEMINI_MODEL, IMAGE_USER_AGENT, EXTRA_IMAGE_HOSTS, RECAP_MAX_PAGES } from './config.js';
+import { PORT, PDF_DIR, PUBLIC_DIR, ROOT, IMAGE_USER_AGENT, EXTRA_IMAGE_HOSTS, RECAP_MAX_PAGES } from './config.js';
 import { documents, progress, lookups, recaps } from './db.js';
-import { explain } from './explain.js';
-import { ExplainError } from './gemini.js';
-import { generateRecap } from './recap.js';
-import { cutKey } from './pagetext.js';
-import { inspectPdf } from './pdfinfo.js';
-import { findImage, ALLOWED_IMAGE_HOSTS } from './images.js';
+import { ExplainError } from './errors.js';
+import { PROVIDER } from './llm/index.js';
+import { explain } from './features/explain.js';
+import { generateRecap } from './features/recap.js';
+import { findImage, ALLOWED_IMAGE_HOSTS } from './features/images.js';
+import { cutKey } from './pdf/pagetext.js';
+import { inspectPdf } from './pdf/pdfinfo.js';
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -46,7 +47,7 @@ const decodeName = (name) => Buffer.from(name, 'latin1').toString('utf8');
 /* ---------------------------------- API ---------------------------------- */
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, geminiConfigured: Boolean(GEMINI_API_KEY), model: GEMINI_MODEL });
+  res.json({ ok: true, aiConfigured: Boolean(PROVIDER.key), provider: PROVIDER.id, model: PROVIDER.model });
 });
 
 app.get('/api/documents', (_req, res) => {
@@ -313,7 +314,7 @@ app.use((err, _req, res, _next) => {
 
 app.listen(PORT, () => {
   console.log(`\n  Smart PDF Reader  ->  http://localhost:${PORT}`);
-  console.log(GEMINI_API_KEY
-    ? `  Gemini: ${GEMINI_MODEL}\n`
-    : `  Gemini: not configured — copy .env.example to .env and add GEMINI_API_KEY\n`);
+  console.log(PROVIDER.key
+    ? `  ${PROVIDER.label}: ${PROVIDER.model}\n`
+    : `  ${PROVIDER.label}: not configured — copy .env.example to .env and add ${PROVIDER.keyVar}\n`);
 });

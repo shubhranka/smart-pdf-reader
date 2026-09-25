@@ -19,6 +19,8 @@ const MAX_CANVAS_PIXELS = 16_777_216;      // per page
 const RENDER_BUDGET_PIXELS = 67_108_864;   // across every rendered page
 const SAVE_DEBOUNCE_MS = 700;
 const PROBE_RATIO = 0.35;        // "current page" = the one a third of the way down the viewport
+const OUTLINE_LANDING_PX = 16;   // a section jumped to from the outline lands this far below the top
+const NARROW = window.matchMedia('(max-width: 640px)');
 
 const el = {
   reader: document.getElementById('reader'),
@@ -27,6 +29,11 @@ const el = {
   title: document.getElementById('doc-title'),
   pageInput: document.getElementById('page-input'),
   pageCount: document.getElementById('page-count'),
+  pageOf: document.getElementById('page-of'),
+  pagePhysical: document.getElementById('page-physical'),
+  outlineBtn: document.getElementById('outline-btn'),
+  outline: document.getElementById('outline'),
+  outlineTree: document.getElementById('outline-tree'),
   prev: document.getElementById('prev-page'),
   next: document.getElementById('next-page'),
   zoomIn: document.getElementById('zoom-in'),
@@ -56,6 +63,7 @@ const el = {
   panelBody: document.getElementById('panel-body'),
   panelClose: document.getElementById('panel-close'),
   historyBtn: document.getElementById('history-btn'),
+  darkPagesBtn: document.getElementById('dark-pages-btn'),
   history: document.getElementById('history'),
   historyList: document.getElementById('history-list'),
   historyEmpty: document.getElementById('history-empty'),
@@ -68,6 +76,36 @@ let state = null;
 let onExit = () => {};
 
 const clamp = (n, lo, hi) => Math.min(Math.max(n, lo), hi);
+
+/* ------------------------------ page labels ------------------------------- */
+
+/*
+ * Pages are numbered by their position in the file everywhere that matters — saved
+ * progress, lookups, recaps, the server. Books print their own numbers though (a cover,
+ * roman front matter, then 1, 2, 3 …), so what the reader sees and types is translated
+ * at the edges and nowhere else.
+ */
+
+/** The number printed on page `n`, or `n` itself when the PDF does not say. */
+function labelOf(n) {
+  return state?.labels?.[n - 1] || String(n);
+}
+
+/**
+ * The page the reader means by what they typed: a printed label first, so "xii" and
+ * "5" go where the book says, then a plain position in the file. Null for neither.
+ */
+function pageFromLabel(input) {
+  const text = String(input ?? '').trim();
+  if (!text || !state) return null;
+  if (state.labels) {
+    const want = text.toLowerCase();
+    const i = state.labels.findIndex((l) => l && l.toLowerCase() === want);
+    if (i !== -1) return i + 1;
+  }
+  const n = Number(text);
+  return Number.isInteger(n) && n >= 1 && n <= state.slots.length ? n : null;
+}
 
 /* ------------------------------ page geometry ----------------------------- */
 
@@ -170,7 +208,7 @@ async function renderPage(slot) {
 
     const tag = document.createElement('div');
     tag.className = 'page-number-tag';
-    tag.textContent = String(slot.num);
+    tag.textContent = labelOf(slot.num);
 
     // The text layer positions itself for the zoom it was built at, so this var
     // tracks the committed zoom, never the live one.
@@ -308,10 +346,13 @@ function syncPageIndicator() {
   const { page } = locate();
   if (page !== state.currentPage) {
     state.currentPage = page;
-    if (document.activeElement !== el.pageInput) el.pageInput.value = String(page);
+    if (document.activeElement !== el.pageInput) el.pageInput.value = labelOf(page);
+    // Where the printed number and the file disagree, say both, the way Acrobat does.
+    if (state.labels) el.pagePhysical.textContent = `(${page} of ${state.slots.length})`;
     el.prev.disabled = page <= 1;
     el.next.disabled = page >= state.slots.length;
   }
+  syncOutline();
 }
 
 /* --------------------------------- zoom ----------------------------------- */
@@ -756,7 +797,7 @@ function renderHistory() {
     li.innerHTML = `
       <span class="history-text">
         <span class="history-term"></span>
-        <span class="history-sub">p.${entry.page} · ${entry.kind}</span>
+        <span class="history-sub">p.${escapeHtml(labelOf(entry.page))} · ${entry.kind}</span>
       </span>
       <button class="delete-btn" title="Delete this lookup" aria-label="Delete this lookup">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14"/></svg>
@@ -789,8 +830,8 @@ function renderHistory() {
 function openRecapRange() {
   if (!state) return;
   const here = locate().page;
-  el.recapFrom.value = el.recapFrom.value || '1';
-  el.recapTo.value = String(here);
+  el.recapFrom.value = el.recapFrom.value || labelOf(1);
+  el.recapTo.value = labelOf(here);
   el.recapRange.hidden = false;
   el.recapFrom.focus();
   el.recapFrom.select();
@@ -815,39 +856,25 @@ function cutForRange(toPage) {
 
 function renderRecap(row) {
   const r = row.result ?? {};
-  const pageRef = (p) => (p ? ` <button class="page-ref" data-page="${p}">p.${p}</button>` : '');
+  const pageRef = (p) => (p ? ` <button class="page-ref" data-page="${p}">p.${escapeHtml(labelOf(p))}</button>` : '');
 
-  const narrative = (r.narrative ?? [])
-    .map((para) => `<p>${escapeHtml(para)}</p>`).join('');
+  // Recaps saved before the summary format carry "whereYouAre" instead.
+  const summary = r.summary || r.whereYouAre || '';
 
-  const points = (r.keyPoints ?? [])
+  const points = (r.keyPoints ?? []).slice(0, 4)
     .map((k) => `<li>${escapeHtml(k.point)}${pageRef(k.page)}</li>`).join('');
 
-  const terms = (r.keyTerms ?? [])
-    .map((t) => `<li><span class="detail-label">${escapeHtml(t.term)}</span><span>${escapeHtml(t.meaning)}${pageRef(t.page)}</span></li>`)
-    .join('');
-
-  const threads = (r.openThreads ?? [])
-    .map((t) => `<li>${escapeHtml(t)}</li>`).join('');
-
-  const scope = row.cut_applied
-    ? `pages ${row.from_page}–${row.to_page}, up to the line you picked`
-    : `pages ${row.from_page}–${row.to_page}`;
+  const pages = `pages ${labelOf(row.from_page)}–${labelOf(row.to_page)}`;
+  const scope = row.cut_applied ? `${pages}, up to the line you picked` : pages;
 
   openPanel('recap', `
     <h3 class="panel-headline">${escapeHtml(r.title || 'Recap')}</h3>
     <p class="panel-selection">${escapeHtml(scope)}</p>
-    ${r.whereYouAre ? `<div class="panel-section">
-      <div class="panel-label">Where you are</div><p>${escapeHtml(r.whereYouAre)}</p></div>` : ''}
-    ${r.diagram ? '<div class="panel-section"><div class="panel-label">How it fits together</div><div class="recap-diagram"></div></div>' : ''}
-    ${narrative ? `<div class="panel-section">
-      <div class="panel-label">What you've covered</div>${narrative}</div>` : ''}
+    ${summary ? `<div class="panel-section">
+      <div class="panel-label">Summary</div><p>${escapeHtml(summary)}</p></div>` : ''}
     ${points ? `<div class="panel-section">
       <div class="panel-label">Key points</div><ul class="recap-points">${points}</ul></div>` : ''}
-    ${terms ? `<div class="panel-section">
-      <div class="panel-label">Terms introduced</div><ul class="detail-list">${terms}</ul></div>` : ''}
-    ${threads ? `<div class="panel-section">
-      <div class="panel-label">Left hanging</div><ul class="recap-points">${threads}</ul></div>` : ''}
+    ${r.diagram ? '<div class="panel-section"><div class="panel-label">How it fits together</div><div class="recap-diagram"></div></div>' : ''}
     <p class="cached-note">
       ${row.chunks > 1 ? `Built from ${row.chunks} passes over the text. ` : ''}
       ${row.cached ? 'From an earlier recap of the same range.' : ''}
@@ -860,7 +887,7 @@ function renderRecap(row) {
 
   const slot = el.panelBody.querySelector('.recap-diagram');
   if (slot && r.diagram) {
-    renderDiagram(r.diagram, slot, (page) => scrollToPage(page, 0, 'smooth'));
+    renderDiagram(r.diagram, slot, (page) => scrollToPage(page, 0, 'smooth'), labelOf);
   }
 }
 
@@ -868,8 +895,8 @@ async function runRecap() {
   if (!state || state.recapRun) return;
 
   const total = state.slots.length;
-  const from = clamp(Number.parseInt(el.recapFrom.value, 10) || 1, 1, total);
-  const to = clamp(Number.parseInt(el.recapTo.value, 10) || locate().page, from, total);
+  const from = clamp(pageFromLabel(el.recapFrom.value) ?? 1, 1, total);
+  const to = clamp(pageFromLabel(el.recapTo.value) ?? locate().page, from, total);
   const cutText = cutForRange(to);
 
   el.recapRange.hidden = true;
@@ -878,7 +905,7 @@ async function runRecap() {
   el.recapGo.disabled = true;
 
   const long = to - from > 25;
-  openPanel('recap', `<div class="panel-loading">Reading pages ${from}–${to}…</div>
+  openPanel('recap', `<div class="panel-loading">Reading pages ${escapeHtml(labelOf(from))}–${escapeHtml(labelOf(to))}…</div>
     ${long ? `<p class="hint">A long stretch takes a minute.
       <button id="recap-background" class="text-btn">Run in the background</button></p>` : ''}`);
 
@@ -933,9 +960,9 @@ function renderRecaps() {
       <button class="delete-btn" title="Delete this recap" aria-label="Delete this recap">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14"/></svg>
       </button>`;
-    li.querySelector('.history-term').textContent = row.result?.title || `Pages ${row.from_page}–${row.to_page}`;
-    li.querySelector('.history-sub').textContent =
-      `p.${row.from_page}–${row.to_page}${row.cut_applied ? ' · to a line' : ''}`;
+    const range = `${labelOf(row.from_page)}–${labelOf(row.to_page)}`;
+    li.querySelector('.history-term').textContent = row.result?.title || `Pages ${range}`;
+    li.querySelector('.history-sub').textContent = `p.${range}${row.cut_applied ? ' · to a line' : ''}`;
 
     li.addEventListener('click', (e) => {
       if (e.target.closest('.delete-btn')) return;
@@ -974,6 +1001,225 @@ async function revealRecap(row) {
   else scrollToPage(row.to_page, 0, 'smooth');
 }
 
+/* -------------------------------- outline --------------------------------- */
+
+const CHEVRON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
+
+/**
+ * Where an outline entry points: `{page, top}`, with `top` in PDF units when the
+ * destination names a height on the page. Destinations come inline or by name, and
+ * name their page by object reference, so both need a trip to the worker.
+ */
+async function resolveDest(pdf, dest) {
+  try {
+    const explicit = typeof dest === 'string' ? await pdf.getDestination(dest) : dest;
+    if (!Array.isArray(explicit)) return null;
+    const [ref, mode] = explicit;
+    const index = Number.isInteger(ref) ? ref : await pdf.getPageIndex(ref);
+    const kind = mode?.name;
+    const top = kind === 'XYZ' ? explicit[3] : (kind === 'FitH' || kind === 'FitBH') ? explicit[2] : null;
+    return { page: index + 1, top: typeof top === 'number' ? top : null };
+  } catch {
+    return null; // a broken entry stays in the tree; it just goes nowhere
+  }
+}
+
+async function resolveOutline(pdf, items, parent = null) {
+  return Promise.all((items ?? []).map(async (item) => {
+    const node = {
+      title: item.title || 'Untitled', page: null, top: null, parent, children: [], li: null, row: null,
+      autoOpened: false, // opened by following the reader, not by them; closed again once they leave
+    };
+    const [where, children] = await Promise.all([
+      resolveDest(pdf, item.dest),
+      resolveOutline(pdf, item.items, node),
+    ]);
+    Object.assign(node, where ?? {});
+    node.children = children;
+    return node;
+  }));
+}
+
+function buildOutlineList(nodes) {
+  const ul = document.createElement('ul');
+  for (const node of nodes) {
+    const li = document.createElement('li');
+    li.className = 'outline-item';
+    const row = document.createElement('div');
+    row.className = 'outline-row';
+
+    if (node.children.length) {
+      li.setAttribute('aria-expanded', 'false');
+      const toggle = document.createElement('button');
+      toggle.className = 'outline-toggle';
+      toggle.setAttribute('aria-label', `Show sections of ${node.title}`);
+      toggle.innerHTML = CHEVRON;
+      toggle.addEventListener('click', () => {
+        li.setAttribute('aria-expanded', li.getAttribute('aria-expanded') === 'true' ? 'false' : 'true');
+        node.autoOpened = false; // the reader's choice now; leave it alone
+      });
+      row.append(toggle);
+    } else {
+      const spacer = document.createElement('span');
+      spacer.className = 'outline-spacer';
+      row.append(spacer);
+    }
+
+    const link = document.createElement('button');
+    link.className = 'outline-link';
+    link.innerHTML = '<span class="outline-title"></span><span class="outline-page"></span>';
+    link.querySelector('.outline-title').textContent = node.title;
+    link.title = node.title;
+    if (node.page) link.querySelector('.outline-page').textContent = labelOf(node.page);
+    else link.disabled = true;
+    link.addEventListener('click', () => {
+      goToOutlineEntry(node);
+      if (NARROW.matches) setOutlineOpen(false); // it covers the pages on a phone
+    });
+    row.append(link);
+
+    li.append(row);
+    if (node.children.length) li.append(buildOutlineList(node.children));
+    node.li = li;
+    node.row = row;
+    ul.append(li);
+  }
+  return ul;
+}
+
+/** Load and draw the PDF's own outline. Runs after first paint; never blocks opening. */
+async function loadOutline(pdf) {
+  let nodes = [];
+  try {
+    nodes = await resolveOutline(pdf, await pdf.getOutline());
+  } catch { /* no outline is the common case, not an error */ }
+  if (state?.pdf !== pdf) return; // the reader opened something else meanwhile
+
+  const flat = [];
+  const walk = (list) => { for (const n of list) { flat.push(n); walk(n.children); } };
+  walk(nodes);
+  state.outline = flat;
+  state.outlineActive = null;
+
+  if (!flat.length) {
+    el.outlineBtn.hidden = true;
+    el.outline.hidden = true;
+    return;
+  }
+
+  el.outlineTree.replaceChildren(...buildOutlineList(nodes).children);
+  el.outlineBtn.hidden = false;
+  setOutlineOpen(outlinePreferred(), { remember: false });
+  syncOutline();
+}
+
+function outlinePreferred() {
+  if (NARROW.matches) return false;
+  try {
+    return localStorage.getItem('spr:outline') !== '0';
+  } catch {
+    return true;
+  }
+}
+
+function setOutlineOpen(open, { remember = true } = {}) {
+  el.outline.hidden = !open;
+  el.outlineBtn.setAttribute('aria-expanded', String(open));
+  el.outlineBtn.setAttribute('aria-label', open ? 'Hide contents' : 'Show contents');
+  el.outlineBtn.classList.toggle('active', open);
+  if (open) state?.outlineActive?.row.scrollIntoView({ block: 'nearest' });
+  if (!remember || NARROW.matches) return;
+  try { localStorage.setItem('spr:outline', open ? '1' : '0'); } catch { /* private mode */ }
+}
+
+/** Dark pages start out matching the system theme until the reader picks one. */
+function darkPagesPreferred() {
+  try {
+    const saved = localStorage.getItem('spr:dark-pages');
+    if (saved !== null) return saved === '1';
+  } catch { /* private mode */ }
+  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+function setDarkPages(on, { remember = true } = {}) {
+  el.reader.classList.toggle('pages-dark', on);
+  el.darkPagesBtn.classList.toggle('active', on);
+  el.darkPagesBtn.setAttribute('aria-pressed', String(on));
+  el.darkPagesBtn.title = on ? 'Light pages' : 'Dark pages';
+  if (!remember) return;
+  try { localStorage.setItem('spr:dark-pages', on ? '1' : '0'); } catch { /* private mode */ }
+}
+
+/** Fraction of the way down its page that an entry's heading sits. */
+async function headingFraction(node) {
+  const page = await state.pdf.getPage(node.page);
+  const viewport = page.getViewport({ scale: 1 });
+  const slot = state.slots[node.page - 1];
+  // The placeholder may still carry page 1's size; the jump has to measure the real one.
+  if (!slot.rendered && (slot.baseW !== viewport.width || slot.baseH !== viewport.height)) {
+    slot.baseW = viewport.width;
+    slot.baseH = viewport.height;
+    sizeSlot(slot);
+  }
+  if (node.top === null) return 0;
+  return clamp(viewport.convertToViewportPoint(0, node.top)[1] / viewport.height, 0, 1);
+}
+
+/** Put an entry's heading just under the top of the view, not a third of the way down. */
+async function goToOutlineEntry(node) {
+  if (!state || !node.page) return;
+  const pdf = state.pdf;
+  const frac = await headingFraction(node).catch(() => 0);
+  if (state?.pdf !== pdf) return;
+  const slot = state.slots[node.page - 1];
+  const target = slot.el.offsetTop + slot.el.offsetHeight * frac - OUTLINE_LANDING_PX;
+  el.container.scrollTo({ top: Math.max(0, target) });
+}
+
+/**
+ * Mark the section being read: the last entry, in outline order, whose heading is at or
+ * above the reading line. Its parents open so it is always in sight, and close again
+ * when the reader moves on — otherwise one long jump would unfold every chapter passed.
+ */
+function syncOutline() {
+  if (!state?.outline?.length) return;
+  const { page, offsetPct } = locate();
+  let active = null;
+  for (const node of state.outline) {
+    if (!node.page) continue;
+    if (node.page < page) active = node;
+    else if (node.page === page) {
+      // Close enough without a round trip to the worker: most pages start at y = 0.
+      const baseH = state.slots[page - 1].baseH;
+      const frac = node.top === null ? 0 : clamp(1 - node.top / baseH, 0, 1);
+      if (frac <= offsetPct) active = node;
+    }
+  }
+  if (active === state.outlineActive) return;
+
+  const previous = state.outlineActive;
+  previous?.row.classList.remove('active');
+  state.outlineActive = active;
+
+  const ancestors = new Set();
+  for (let p = active?.parent; p; p = p.parent) ancestors.add(p);
+  for (let p = previous?.parent; p; p = p.parent) {
+    if (p.autoOpened && !ancestors.has(p)) {
+      p.li.setAttribute('aria-expanded', 'false');
+      p.autoOpened = false;
+    }
+  }
+  for (const p of ancestors) {
+    if (p.li.getAttribute('aria-expanded') === 'true') continue;
+    p.li.setAttribute('aria-expanded', 'true');
+    p.autoOpened = true;
+  }
+
+  if (!active) return;
+  active.row.classList.add('active');
+  if (!el.outline.hidden) active.row.scrollIntoView({ block: 'nearest' });
+}
+
 /* ------------------------------ open / close ------------------------------ */
 
 /** Persist the position even while the page is unloading, where fetch is unreliable. */
@@ -997,7 +1243,10 @@ export async function openDocument(docId) {
   const zoom = clamp(Number(localStorage.getItem('spr:zoom')) || 1, MIN_ZOOM, MAX_ZOOM);
 
   const pdf = await pdfjsLib.getDocument({ url: fileUrl(docId) }).promise;
-  const firstPage = await pdf.getPage(1);
+  const [firstPage, labels] = await Promise.all([
+    pdf.getPage(1),
+    pdf.getPageLabels().catch(() => null),
+  ]);
   const unscaled = firstPage.getViewport({ scale: 1 });
 
   state = {
@@ -1007,6 +1256,10 @@ export async function openDocument(docId) {
     liveZoom: zoom,
     zoomCommitTimer: null,
     slots: buildSlots(pdf.numPages, unscaled.width, unscaled.height),
+    // Only worth keeping when they say something the position does not.
+    labels: labels?.some((l, i) => l && l !== String(i + 1)) ? labels : null,
+    outline: [],
+    outlineActive: null,
     currentPage: 0,
     savedPage: saved.page,
     savedOffset: saved.offset_pct ?? 0,
@@ -1024,7 +1277,9 @@ export async function openDocument(docId) {
   sizeAllSlots();
   updateZoomControls();
   el.pageCount.textContent = String(pdf.numPages);
-  el.pageInput.max = String(pdf.numPages);
+  // With printed numbers, "/ 673" would read as the book's last page; say it plainly instead.
+  el.pageOf.hidden = Boolean(state.labels);
+  el.pagePhysical.hidden = !state.labels;
 
   // Restore the reading position before the first paint the user sees.
   scrollToPage(saved.page, saved.offset_pct ?? 0);
@@ -1032,6 +1287,7 @@ export async function openDocument(docId) {
   syncPageIndicator();
   loadHistory();
   loadRecaps();
+  loadOutline(pdf);
 }
 
 export function close() {
@@ -1048,6 +1304,9 @@ export function close() {
     state = null;
   }
   el.viewer.replaceChildren();
+  el.outlineTree.replaceChildren();
+  el.outline.hidden = true;
+  el.outlineBtn.hidden = true;
   el.reader.hidden = true;
   el.recapRange.hidden = true;
   showDrawer(null);
@@ -1075,14 +1334,22 @@ export function initReader(exitHandler) {
   }, { passive: true });
 
   el.back.addEventListener('click', () => onExit());
+  el.outlineBtn.addEventListener('click', () => state && setOutlineOpen(el.outline.hidden));
+  setDarkPages(darkPagesPreferred(), { remember: false });
+  el.darkPagesBtn.addEventListener('click', () => setDarkPages(!el.reader.classList.contains('pages-dark')));
 
   el.prev.addEventListener('click', () => state && scrollToPage(locate().page - 1, 0, 'smooth'));
   el.next.addEventListener('click', () => state && scrollToPage(locate().page + 1, 0, 'smooth'));
 
   const jump = () => {
     if (!state) return;
-    const page = clamp(Number.parseInt(el.pageInput.value, 10) || 1, 1, state.slots.length);
-    el.pageInput.value = String(page);
+    const page = pageFromLabel(el.pageInput.value);
+    if (page === null) {
+      // Nothing by that name: put back where we are rather than guess.
+      el.pageInput.value = labelOf(locate().page);
+      return;
+    }
+    el.pageInput.value = labelOf(page);
     scrollToPage(page, 0, 'smooth');
   };
   el.pageInput.addEventListener('change', jump);
@@ -1151,8 +1418,8 @@ export function initReader(exitHandler) {
     if (!sel) return;
     setRecapCut(sel);
     hideExplainButton();
-    el.recapFrom.value = '1';
-    el.recapTo.value = String(sel.page);
+    el.recapFrom.value = labelOf(1);
+    el.recapTo.value = labelOf(sel.page);
     el.recapRange.hidden = false;
     showDrawer(null);
   });
@@ -1233,7 +1500,8 @@ export function initReader(exitHandler) {
       if (!el.history.hidden) return void (el.history.hidden = true);
       onExit();
     }
-    if (e.target === el.pageInput) return;
+    if (e.target.closest?.('input, textarea')) return;
+    if (e.key === '\\' && !el.outlineBtn.hidden && !e.metaKey && !e.ctrlKey) setOutlineOpen(el.outline.hidden);
     if ((e.key === '=' || e.key === '+') && (e.metaKey || e.ctrlKey)) { e.preventDefault(); setZoom(nextZoomStop(1)); }
     if (e.key === '-' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); setZoom(nextZoomStop(-1)); }
     if (e.key === '0' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); setZoom(1); }

@@ -1,5 +1,5 @@
-import { imageCache } from './db.js';
-import { IMAGE_USER_AGENT, WIKIPEDIA_API_BASE, COMMONS_API_BASE, OPENVERSE_API_BASE, EXTRA_IMAGE_HOSTS } from './config.js';
+import { imageCache } from '../db.js';
+import { IMAGE_USER_AGENT, WIKIPEDIA_API_BASE, COMMONS_API_BASE, OPENVERSE_API_BASE, EXTRA_IMAGE_HOSTS } from '../config.js';
 
 const TIMEOUT_MS = 4500;
 

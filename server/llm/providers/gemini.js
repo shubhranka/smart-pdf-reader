@@ -1,30 +1,21 @@
-import { GEMINI_API_KEY, GEMINI_MODEL, GEMINI_API_BASE, GEMINI_API_REVISION, GEMINI_THINKING_LEVEL } from './config.js';
+import { env } from '../../config.js';
+import { ExplainError } from '../../errors.js';
+import { deadline, parseAnswer } from '../shared.js';
 
 /**
- * The transport for every Gemini call the app makes. Explanations and recaps want
- * different instructions, schemas and budgets but the same wire format, the same
- * error mapping and the same thinking-level negotiation, so that all lives here.
+ * Gemini, over the Interactions API: its wire format, its error mapping and the
+ * thinking-level negotiation.
  */
 
-// Named for its first caller. Every AI feature throws it, and the error handler in
-// index.js turns any of them into { error, hint } with the right status.
-export class ExplainError extends Error {
-  constructor(message, status = 502, hint = '') {
-    super(message);
-    this.status = status;
-    this.hint = hint;
-  }
-}
-
-/** Callers check this before touching a cache, so a keyless setup fails the same way every time. */
-export function requireKey() {
-  if (GEMINI_API_KEY) return;
-  throw new ExplainError(
-    'No Gemini API key configured.',
-    503,
-    'Copy .env.example to .env and set GEMINI_API_KEY. Get one at https://aistudio.google.com/apikey'
-  );
-}
+const API_KEY = env('GEMINI_API_KEY');
+const MODEL = env('GEMINI_MODEL', 'gemini-3.5-flash');
+// Overridable so tests can point at a stub instead of the real API.
+const API_BASE = env('GEMINI_API_BASE', 'https://generativelanguage.googleapis.com/v1beta');
+// Pins the request/response shape of the Interactions API. Google's own examples send it.
+const API_REVISION = env('GEMINI_API_REVISION', '2026-05-20');
+// Models differ on which levels they accept, so this is both configurable and, on
+// rejection, corrected from what the API says it allows.
+const THINKING_LEVEL = env('GEMINI_THINKING_LEVEL', 'low');
 
 /**
  * An Interaction response carries `steps`, each holding content blocks. Mirror the
@@ -67,19 +58,13 @@ function allowedLevelFrom(message) {
   return THINKING_PREFERENCE.find((level) => allowed.includes(level)) ?? null;
 }
 
-/** A caller's signal plus a deadline, without either one cancelling the other's cleanup. */
-function deadline(signal, timeoutMs) {
-  const timer = AbortSignal.timeout(timeoutMs);
-  return signal ? AbortSignal.any([signal, timer]) : timer;
-}
-
 /**
  * One structured-JSON call. Returns the parsed object plus the raw text, so each
  * caller can fall back its own way when the model ignores the schema.
  *
  * @returns {Promise<{ json: object|null, text: string }>}
  */
-export async function callGemini({
+async function call({
   systemInstruction,
   input,
   schema,
@@ -87,12 +72,12 @@ export async function callGemini({
   timeoutMs = 30_000,
   signal,
 }) {
-  const requested = generationConfig.thinking_level ?? GEMINI_THINKING_LEVEL;
+  const requested = generationConfig.thinking_level ?? THINKING_LEVEL;
 
   const send = async (retrying) => {
     const level = corrections.get(requested) ?? requested;
     const body = {
-      model: GEMINI_MODEL,
+      model: MODEL,
       system_instruction: systemInstruction,
       input,
       response_format: {
@@ -110,12 +95,12 @@ export async function callGemini({
       store: false,
     };
 
-    const res = await fetch(`${GEMINI_API_BASE}/interactions`, {
+    const res = await fetch(`${API_BASE}/interactions`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-goog-api-key': GEMINI_API_KEY,
-        'Api-Revision': GEMINI_API_REVISION,
+        'x-goog-api-key': API_KEY,
+        'Api-Revision': API_REVISION,
       },
       body: JSON.stringify(body),
       signal: deadline(signal, timeoutMs),
@@ -130,7 +115,7 @@ export async function callGemini({
       if (!retrying && /thinking[_ ]level/i.test(detail)) {
         const fallback = allowedLevelFrom(detail);
         if (fallback && fallback !== level) {
-          console.warn(`Gemini rejected thinking_level "${level}" for ${GEMINI_MODEL}; using "${fallback}".`);
+          console.warn(`Gemini rejected thinking_level "${level}" for ${MODEL}; using "${fallback}".`);
           corrections.set(requested, fallback);
           return send(true);
         }
@@ -140,10 +125,10 @@ export async function callGemini({
         throw new ExplainError('Gemini rejected the API key.', 401, 'Check GEMINI_API_KEY in .env');
       }
       if (res.status === 403 && /permission|access/i.test(detail)) {
-        throw new ExplainError(`Your key cannot use "${GEMINI_MODEL}".`, 403, 'Pick another GEMINI_MODEL in .env — see https://ai.google.dev/gemini-api/docs/models');
+        throw new ExplainError(`Your key cannot use "${MODEL}".`, 403, 'Pick another GEMINI_MODEL in .env — see https://ai.google.dev/gemini-api/docs/models');
       }
       if (res.status === 404) {
-        throw new ExplainError(`Model "${GEMINI_MODEL}" is not available for this key.`, 400, 'Pick a current GEMINI_MODEL in .env — see https://ai.google.dev/gemini-api/docs/models');
+        throw new ExplainError(`Model "${MODEL}" is not available for this key.`, 400, 'Pick a current GEMINI_MODEL in .env — see https://ai.google.dev/gemini-api/docs/models');
       }
       if (res.status === 429) {
         throw new ExplainError('Gemini rate limit hit. Wait a moment and try again.', 429);
@@ -161,14 +146,20 @@ export async function callGemini({
       throw new ExplainError(`Gemini returned nothing (${reason}).`, 502);
     }
 
-    // Schema mode should make this always parse, but a parse failure must never take
-    // down the request — the caller decides what to do with bare text.
-    try {
-      return { json: JSON.parse(text), text };
-    } catch {
-      return { json: null, text };
-    }
+    return parseAnswer(text);
   };
 
   return send(false);
 }
+
+export default {
+  id: 'gemini',
+  label: 'Gemini',
+  key: API_KEY,
+  keyVar: 'GEMINI_API_KEY',
+  model: MODEL,
+  modelVar: 'GEMINI_MODEL',
+  keyUrl: 'https://aistudio.google.com/apikey',
+  modelsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+  call,
+};

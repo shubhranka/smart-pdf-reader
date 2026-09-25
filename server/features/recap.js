@@ -1,15 +1,15 @@
 import { createHash } from 'node:crypto';
 import {
-  GEMINI_MODEL, RECAP_BUDGET_CHARS, RECAP_CHUNK_CHARS,
+  RECAP_BUDGET_CHARS, RECAP_CHUNK_CHARS,
   RECAP_MAX_CHUNKS, RECAP_CONCURRENCY,
-} from './config.js';
+} from '../config.js';
 
-import { recapChunks } from './db.js';
-import { ExplainError, requireKey, callGemini } from './gemini.js';
-import { pageTextRange, stripRunningHeads, joinPages, cutAtPhrase } from './pagetext.js';
+import { recapChunks } from '../db.js';
+import { ExplainError, requireKey, callModel, MODEL } from '../llm/index.js';
+import { pageTextRange, stripRunningHeads, joinPages, cutAtPhrase } from '../pdf/pagetext.js';
 
 /**
- * "Catch me up": a structured account of what a stretch of a document covered.
+ * "Catch me up": a brief summary of what a stretch of a document covered.
  *
  * Short ranges are one call. Long ones are summarised in chunks and the notes combined,
  * because a single call over a hundred pages goes shallow and front-loaded, and because
@@ -35,7 +35,7 @@ const DIAGRAM_SCHEMA = {
     caption: { type: 'string', description: 'One short line naming what the picture shows.' },
     nodes: {
       type: 'array',
-      description: 'Three to eight. Fewer and clearer beats more.',
+      description: 'Three to five. Fewer and clearer beats more.',
       items: {
         type: 'object',
         properties: {
@@ -70,15 +70,13 @@ const RECAP_SCHEMA = {
   type: 'object',
   properties: {
     title: { type: 'string', description: '3-7 words naming what this stretch covered. Used as the label in the saved list.' },
-    whereYouAre: { type: 'string', description: 'At most two sentences: what this document is, and what point in its argument the stopping place lands on.' },
-    narrative: {
-      type: 'array',
-      description: "The account of what has been covered, in the document's own order. One short paragraph per step, three to six of them.",
-      items: { type: 'string' },
+    summary: {
+      type: 'string',
+      description: 'One short paragraph, three to five sentences: what was covered, in order, ending on where the reader stopped.',
     },
     keyPoints: {
       type: 'array',
-      description: 'Up to eight things worth remembering. Not a table of contents.',
+      description: 'Up to four things worth remembering, each a single short line.',
       items: {
         type: 'object',
         properties: {
@@ -89,28 +87,9 @@ const RECAP_SCHEMA = {
         additionalProperties: false,
       },
     },
-    keyTerms: {
-      type: 'array',
-      description: 'Terms this stretch introduced and later relies on. Omit when there are none worth naming.',
-      items: {
-        type: 'object',
-        properties: {
-          term: { type: 'string' },
-          meaning: { type: 'string' },
-          page: { type: 'integer', description: 'Where it was introduced. 0 when unclear.' },
-        },
-        required: ['term', 'meaning'],
-        additionalProperties: false,
-      },
-    },
-    openThreads: {
-      type: 'array',
-      description: 'Questions the document raised here and has not answered yet.',
-      items: { type: 'string' },
-    },
     diagram: DIAGRAM_SCHEMA,
   },
-  required: ['title', 'whereYouAre', 'narrative', 'keyPoints', 'diagram'],
+  required: ['title', 'summary', 'keyPoints', 'diagram'],
   additionalProperties: false,
 };
 
@@ -144,24 +123,21 @@ const CHUNK_SCHEMA = {
 
 /* --------------------------------- prompts -------------------------------- */
 
-const SYSTEM_RECAP = `You catch a reader up on a document they have been reading. They want to recall what has been covered so far, not read it again.
+const SYSTEM_RECAP = `You give a reader a brief summary of a document they have been reading, so they can recall what has been covered at a glance. Brevity is the point: they want a reminder, not a retelling.
 
 Rules:
 - Write to them, in the second person, in plain language. No preamble, no "this document discusses".
-- Follow the document's own order, and say how the parts connect — not just what each one said.
-- "whereYouAre" is two sentences at most: what this document is, and where in its argument the stopping point lands.
-- "narrative" is the account itself: short paragraphs, each one a step in the story.
-- "keyPoints" are the things worth remembering, not a table of contents.
-- "keyTerms" are terms the document introduced and later relies on. Leave it out when there are none worth naming.
+- "summary" is one short paragraph of three to five sentences. Follow the document's order and end on where the reader stopped.
+- "keyPoints" are at most four, each one short line. Only what is genuinely worth remembering; fewer is fine.
+- Leave out examples, asides and detail. If a sentence would not be missed, cut it.
 - Cover only the text you are given. Never fill a gap from your own knowledge.
-- If the text is garbled by PDF extraction, say so once and work with what is legible.
-- If the range stops mid-argument, say what was left hanging in "openThreads".
+- If the text is garbled by PDF extraction, say so in a few words and work with what is legible.
 
 The diagram:
 - Draw the shape of what was covered — how the parts relate, not a list of them redrawn as boxes.
 - "flow" when the stretch is a progression; "map" when it is a set of ideas that relate.
 - Label every edge with the actual relationship. Never "related to", never an empty label.
-- Eight nodes is the maximum and five is usually better. Every node must be reachable by some edge.
+- Three to five nodes. Every node must be reachable by some edge.
 - Give a node its page number when the text makes clear where it was introduced.`;
 
 const SYSTEM_CHUNK = `You are taking notes on one stretch of a longer document, so that a summary can later be written from your notes alone. Whoever writes it will not see this text.
@@ -173,9 +149,9 @@ Rules:
 - Do not conclude or wrap up. This is the middle of something.
 - If the text is garbled by PDF extraction, say so in "narrative" rather than inventing content.`;
 
-const REDUCE_PREAMBLE = `You are working from notes on consecutive stretches of one document, in reading order. These are notes, not the document — they are already compressed, so treat every line as significant and do not compress further by dropping whole sections.
+const REDUCE_PREAMBLE = `You are working from notes on consecutive stretches of one document, in reading order. These are notes, not the document. Condense them into a brief summary that spans the whole range — do not favour the opening stretches.
 
-Weight the final stretch most heavily for "whereYouAre": that is where the reader actually is. Deduplicate — a point made in three stretches is one point, stated once, citing the earliest page. Never present the recap stretch by stretch, and never mention that notes were used.`;
+Weight the final stretch most heavily at the end of "summary": that is where the reader actually is. Deduplicate — a point made in three stretches is one point, stated once, citing the earliest page. Keep only the few things that matter across the whole range. Never present the recap stretch by stretch, and never mention that notes were used.`;
 
 /* -------------------------------- utilities ------------------------------- */
 
@@ -239,7 +215,7 @@ function normaliseDiagram(raw) {
     if (!id || !label || seen.has(id)) continue;
     seen.add(id);
     nodes.push({ id, label: label.slice(0, 60), page: page(n?.page) });
-    if (nodes.length === 8) break;
+    if (nodes.length === 6) break;
   }
   if (nodes.length < 2) return null;
 
@@ -266,15 +242,10 @@ function normaliseRecap(raw, { fromPage, toPage }) {
   const arr = (v) => (Array.isArray(v) ? v : []);
   return {
     title: str(raw?.title) || `Pages ${fromPage}–${toPage}`,
-    whereYouAre: str(raw?.whereYouAre),
-    narrative: arr(raw?.narrative).map(str).filter(Boolean).slice(0, 6),
+    summary: str(raw?.summary),
     keyPoints: arr(raw?.keyPoints)
       .map((p) => ({ point: str(p?.point), page: page(p?.page) }))
-      .filter((p) => p.point).slice(0, 8),
-    keyTerms: arr(raw?.keyTerms)
-      .map((t) => ({ term: str(t?.term), meaning: str(t?.meaning), page: page(t?.page) }))
-      .filter((t) => t.term && t.meaning).slice(0, 8),
-    openThreads: arr(raw?.openThreads).map(str).filter(Boolean).slice(0, 5),
+      .filter((p) => p.point).slice(0, 4),
     diagram: normaliseDiagram(raw?.diagram),
   };
 }
@@ -287,28 +258,28 @@ function rangeHeader(doc, fromPage, toPage, cut) {
 }
 
 async function callRecap(input, signal) {
-  const { json, text } = await callGemini({
+  const { json, text } = await callModel({
     systemInstruction: SYSTEM_RECAP,
     input,
     schema: RECAP_SCHEMA,
     // Selecting and ordering across tens of thousands of words is what deliberation
     // actually helps with — unlike a definition, which is recall.
-    generationConfig: { temperature: 0.3, thinking_level: 'low', max_output_tokens: 4096 },
+    generationConfig: { temperature: 0.3, thinking_level: 'low', max_output_tokens: 2048 },
     timeoutMs: 120_000,
     signal,
   });
   if (json) return json;
-  throw new ExplainError(`Gemini did not return a usable recap.${text ? '' : ' It returned nothing.'}`, 502);
+  throw new ExplainError(`The model did not return a usable recap.${text ? '' : ' It returned nothing.'}`, 502);
 }
 
 async function summariseChunk(chunk, doc, signal) {
   const body = joinPages(chunk.pages);
-  const key = sha([MAP_PROMPT_VERSION, GEMINI_MODEL, doc.id, chunk.from, chunk.to, sha(body)].join('\u0000'));
+  const key = sha([MAP_PROMPT_VERSION, MODEL, doc.id, chunk.from, chunk.to, sha(body)].join('\u0000'));
 
   const hit = recapChunks.get(key);
   if (hit) return { ...hit, cached: true };
 
-  const { json, text } = await callGemini({
+  const { json, text } = await callModel({
     systemInstruction: SYSTEM_CHUNK,
     input: `Take notes on pages ${chunk.from}–${chunk.to} of "${doc.title}".\n\n"""\n${body}\n"""`,
     schema: CHUNK_SCHEMA,

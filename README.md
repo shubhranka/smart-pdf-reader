@@ -7,7 +7,7 @@ A local PDF reader that remembers where you stopped and explains anything you hi
 - **A picture when one helps.** If the term is something you can actually look at — an organism, a structure, a data structure normally taught with a diagram — the Meaning section shows one from Wikipedia, Wikimedia Commons or Openverse, credited and linked. Abstract terms get no picture, which is the point.
 - **Repeat lookups are free.** Identical selections are cached, so re-highlighting a term costs nothing.
 - **Lookup history** per document. Clicking one scrolls to the exact words on the page and highlights them, rather than dumping you at the top of the page. Delete them one at a time or clear the lot.
-- **Catch me up.** Ask for a recap of everything from the start of the book up to where you are — or up to a page you type, or up to a line you select. You get where you are, what you have covered, the key points and terms with the pages they came from, and **a hand-drawn diagram of how the parts connect**. Recaps are saved, so "what I knew at page 40" stays reachable.
+- **Catch me up.** Ask for a recap of everything from the start of the book up to where you are — or up to a page you type, or up to a line you select. You get a short summary, up to four key points with the pages they came from, and **a hand-drawn diagram of how the parts connect**. Recaps are saved, so "what I knew at page 40" stays reachable.
 
 Everything runs on your machine. PDFs live in `pdfs/`, state in a SQLite file under `data/`.
 
@@ -30,6 +30,27 @@ PORT=3210
 Other models worth knowing: `gemini-3.8-flash` is smarter and costs more, `gemini-3.5-flash-lite`
 is the cheapest and is fine for plain definitions. The `gemini-2.5-*` line is legacy and closed
 to new projects — see [the model list](https://ai.google.dev/gemini-api/docs/models).
+
+### Mistral, Groq, OpenRouter or NVIDIA NIM instead
+
+Set that provider's key instead of (or as well as) the Gemini one. `LLM_PROVIDER` picks
+between them. If you leave it unset, the first provider with a key wins, in the order
+Gemini, Mistral, Groq, OpenRouter, NVIDIA NIM:
+
+```
+LLM_PROVIDER=mistral          # or groq, openrouter, nvidia
+MISTRAL_API_KEY=your-key-here # https://console.mistral.ai/api-keys
+GROQ_API_KEY=your-key-here    # https://console.groq.com/keys
+OPENROUTER_API_KEY=sk-or-...  # https://openrouter.ai/settings/keys
+NVIDIA_API_KEY=nvapi-...      # https://build.nvidia.com/settings/api-keys
+```
+
+The defaults are `mistral-small-latest` and `openai/gpt-oss-120b` (Groq and OpenRouter).
+NVIDIA NIM defaults to `deepseek-ai/deepseek-v4.1-flash`, and `NVIDIA_API_BASE` points it at a
+NIM you host yourself. Override the models with `MISTRAL_MODEL`, `GROQ_MODEL`,
+`OPENROUTER_MODEL` or `NVIDIA_MODEL`. On OpenRouter, pick a
+model that [supports structured outputs](https://openrouter.ai/models?supported_parameters=structured_outputs). `.env.example` lists the
+alternatives.
 
 The reader works without a key — you just get a clear message instead of an explanation when you highlight something.
 
@@ -68,13 +89,25 @@ public/            the browser side, no build step
 
 server/
   index.js           Express routes
+  config.js          env and paths; env() is how provider modules read their settings
   db.js              SQLite schema and queries (node:sqlite, no native build)
-  gemini.js          the Gemini transport: wire format, errors, thinking level
-  explain.js         lookup prompt, schema and response cache
-  recap.js           recap prompts, one call vs map-reduce, chunk cache
-  pagetext.js        server-side page text, cached per page, and the line cut
-  pdfinfo.js         page count and title, read server-side on upload
-  config.js          env and paths
+  errors.js          ExplainError, turned into { error, hint } by the route handler
+  llm/
+    index.js         picks the provider; callModel(), requireKey(), MODEL
+    shared.js        deadlines, error mapping, JSON parsing, strict-schema rewriting
+    providers/
+      gemini.js      Gemini on the Interactions API: wire format, errors, thinking level
+      mistral.js     Mistral on chat completions
+      groq.js        Groq on chat completions, strict schemas and reasoning effort
+      openrouter.js  OpenRouter on chat completions, strict schemas, private routing
+      nvidia.js      NVIDIA NIM, hosted or self-hosted; falls back to guided_json
+  features/
+    explain.js       lookup prompt, schema and response cache
+    recap.js         recap prompts, one call vs map-reduce, chunk cache
+    images.js        picture search and the image proxy's host list
+  pdf/
+    pagetext.js      server-side page text, cached per page, and the line cut
+    pdfinfo.js       page count and title, read server-side on upload
 
 test/e2e.mjs       drives the real UI in Chrome against a stub Gemini
 ```
@@ -114,7 +147,7 @@ Some details worth knowing if you extend it:
 - **A lookup and a recap want different amounts of thinking.** A definition is recall, so it
   asks for `minimal`. A recap is selection and ordering across tens of thousands of words, so
   it asks for `low` — and chunk notes go back to `minimal`, because that cost is multiplied by
-  every chunk. Models differ on which levels they accept; `gemini.js` reads the allowed values
+  every chunk. Models differ on which levels they accept; `llm/providers/gemini.js` reads the allowed values
   out of a rejection and remembers them, per level asked for.
 
 - **Pages render lazily.** Only pages near the viewport hold a canvas; the rest are
@@ -131,9 +164,27 @@ Some details worth knowing if you extend it:
   and `store: false` keeps the lookups off Google's servers.
 - **The Gemini call uses the [Interactions API](https://ai.google.dev/gemini-api/docs/text-generation)**:
   `POST /v1beta/interactions` with an `Api-Revision` header, a plain-string `input`, and the
-  answer read back out of the `steps` array. `outputText()` in `explain.js` takes the trailing
+  answer read back out of the `steps` array. `outputText()` in `llm/providers/gemini.js` takes the trailing
   run of text blocks, the same rule the SDKs' `output_text` follows, so reasoning or tool
   blocks earlier in a response are skipped.
+- **Each provider speaks its own dialect, in its own file.** Mistral gets a system and a
+  user message at `POST {base}/chat/completions`, with the JSON Schema under
+  `response_format.json_schema`, and answers in `choices[0].message.content`. Groq is called like Mistral, but its
+  strict mode demands every field be required. So `strictSchema()` in `shared.js` marks
+  optional fields as required-but-nullable, and `dropNulls()` removes them from the answer. It also maps
+  `thinking_level` onto Groq's `reasoning_effort`, and adds 2,048 tokens to the output
+  budget because reasoning counts against it. Mistral drops `thinking_level`: for more or less deliberation, choose a reasoning or
+  non-reasoning model. The model name is part of every cache key, so switching
+  provider never serves you another model's cached answer.
+  OpenRouter is called the same way, and also tells its router to use only upstream
+  providers that honour `response_format` (`require_parameters`) and that do not keep
+  prompts (`data_collection: 'deny'`).
+  NVIDIA NIM models disagree on the details, so `nvidia.js` corrects itself like
+  `gemini.js` does: if the server refuses `response_format` it retries with NIM's
+  `nvext.guided_json`, and if it refuses `reasoning_effort` it drops it, remembering
+  either for later calls. Its instructions go in the user turn, since NIM model
+  references say roles must alternate user/assistant.
+  Adding another provider is one file in `llm/providers/` plus one line in `llm/index.js`.
 - **Pinch-zoom previews, then sharpens.** Re-rendering the PDF on every frame of a pinch
   would be unusable, so a gesture only resizes each page box and scales the pixels already
   drawn with a CSS transform — canvas and text layer share one wrapper, which keeps
@@ -160,7 +211,7 @@ Some details worth knowing if you extend it:
   never delays the meaning.
 - **`thinking_level` corrects itself.** Models disagree about which levels they accept —
   `gemini-3.8-flash` rejects `minimal`. When the API refuses one it names the ones it takes,
-  so `explain.js` retries with the cheapest allowed and remembers it, rather than making you
+  so `llm/providers/gemini.js` retries with the cheapest allowed and remembers it, rather than making you
   edit a config file. Override with `GEMINI_THINKING_LEVEL` if you want a specific level.
 - **Rendering is memory-capped.** A page at 500% on a retina screen would otherwise back a
   ~190 MB canvas. `MAX_CANVAS_PIXELS` caps any single page and `RENDER_BUDGET_PIXELS` caps

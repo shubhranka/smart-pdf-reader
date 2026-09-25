@@ -33,6 +33,7 @@ let lastCall = null;
 const calls = [];          // every model call, so the map-reduce passes can be counted
 const imageCalls = [];
 const thinkingLevels = [];
+const providerCalls = []; // requests that reached the chat-completions stubs
 // smallest valid PNG
 const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
@@ -75,6 +76,23 @@ const stub = http.createServer((req, res) => {
       }] }));
     }
 
+    // --- Mistral, Groq, OpenRouter and NVIDIA NIM: chat completions ---
+    if (url.pathname.endsWith('/chat/completions')) {
+      const call = { path: url.pathname, headers: req.headers, body: JSON.parse(raw || '{}') };
+      providerCalls.push(call);
+      // Some NIM models refuse response_format; the app should fall back to guided_json.
+      if (url.pathname.startsWith('/nvidia/') && call.body.response_format) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: { message: 'response_format is not supported for this model' } }));
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({
+        id: 'chat-test',
+        choices: [{ index: 0, finish_reason: 'stop',
+          message: { role: 'assistant', content: JSON.stringify(EXPLAIN_ANSWER) } }],
+      }));
+    }
+
     lastCall = { path: req.url, headers: req.headers, body: JSON.parse(raw || '{}') };
     calls.push(lastCall);
     thinkingLevels.push(lastCall.body.generation_config?.thinking_level);
@@ -90,7 +108,7 @@ const stub = http.createServer((req, res) => {
     // Explanations, chunk notes and recaps all post to /interactions, so the shape
     // asked for is the only thing that tells them apart.
     const props = lastCall.body.response_format?.schema?.properties ?? {};
-    const answer = props.narrative?.type === 'array' ? RECAP_ANSWER
+    const answer = props.summary ? RECAP_ANSWER
       : props.points ? CHUNK_ANSWER
       : EXPLAIN_ANSWER;
 
@@ -117,11 +135,8 @@ const EXPLAIN_ANSWER = {
 
 const RECAP_ANSWER = {
   title: 'Bioenergetics so far',
-  whereYouAre: 'A cell-biology text. You have reached the membrane transport sections.',
-  narrative: ['The chapter opens on the mitochondrion.', 'It then builds up chemiosmotic coupling.'],
+  summary: 'You opened on the mitochondrion, then built up chemiosmotic coupling. You stopped at membrane transport.',
   keyPoints: [{ point: 'ATP is made from a proton gradient.', page: 2 }],
-  keyTerms: [{ term: 'chemiosmotic coupling', meaning: 'Potential into chemical bonds.', page: 1 }],
-  openThreads: ['How the gradient is re-established.'],
   diagram: {
     kind: 'flow',
     caption: 'How the gradient becomes ATP',
@@ -149,11 +164,23 @@ const CHUNK_ANSWER = {
 };
 
 const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'spr-test-'));
-let server, browser;
+let server, browser, altServer;
+
+// The server loads the real .env, which may name a provider and hold real keys. Pin
+// every provider setting here so no test run can reach a live API or spend quota.
+const NO_PROVIDERS = {
+  LLM_PROVIDER: '',
+  GEMINI_API_KEY: '', GEMINI_MODEL: '', GEMINI_API_BASE: 'http://localhost:1',
+  MISTRAL_API_KEY: '', MISTRAL_MODEL: '', MISTRAL_API_BASE: 'http://localhost:1',
+  GROQ_API_KEY: '', GROQ_MODEL: '', GROQ_API_BASE: 'http://localhost:1',
+  OPENROUTER_API_KEY: '', OPENROUTER_MODEL: '', OPENROUTER_API_BASE: 'http://localhost:1',
+  NVIDIA_API_KEY: '', NVIDIA_MODEL: '', NVIDIA_API_BASE: 'http://localhost:1',
+};
 
 const cleanup = async () => {
   await browser?.close().catch(() => {});
   server?.kill();
+  altServer?.kill();
   stub.close();
   await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
 };
@@ -165,6 +192,8 @@ try {
     cwd: ROOT,
     env: {
       ...process.env,
+      ...NO_PROVIDERS,
+      LLM_PROVIDER: 'gemini',
       PORT: String(PORT),
       DATA_DIR: path.join(tmp, 'data'),
       PDF_DIR: path.join(tmp, 'pdfs'),
@@ -240,6 +269,20 @@ try {
   const spans = await page.locator('.page .textLayer span').count();
   check('selectable text layer is present', spans > 0, `${spans} spans`);
 
+  // Dark pages: the canvas is inverted, the text layer is left alone, and the choice sticks.
+  const canvasFilter = () => page.evaluate(() => getComputedStyle(document.querySelector('.page canvas')).filter);
+  const startedDark = await page.evaluate(() => document.getElementById('reader').classList.contains('pages-dark'));
+  if (startedDark) await page.click('#dark-pages-btn');
+  check('pages start light on a light system', !startedDark);
+  await page.click('#dark-pages-btn');
+  check('dark pages inverts the page canvas', /invert/.test(await canvasFilter()), await canvasFilter());
+  check('dark pages leaves the text layer unfiltered',
+    await page.evaluate(() => getComputedStyle(document.querySelector('.page .textLayer')).filter) === 'none');
+  check('dark pages is remembered',
+    await page.evaluate(() => localStorage.getItem('spr:dark-pages')) === '1');
+  await page.click('#dark-pages-btn');
+  check('toggling again restores light pages', (await canvasFilter()) === 'none');
+
   /* scroll -> indicator -> saved progress */
   await page.evaluate(() => {
     const c = document.getElementById('viewer-container');
@@ -303,6 +346,7 @@ try {
   check('sends the API key header', lastCall.headers['x-goog-api-key'] === 'stub-key');
   check('pins the API revision', lastCall.headers['api-revision'] === '2026-05-20',
     lastCall.headers['api-revision']);
+  check('the test server is pinned to the stub Gemini', lastCall.body.model === 'gemini-3.5-flash', lastCall.body.model);
   check('names the model in the body',
     typeof lastCall.body.model === 'string' && lastCall.body.model.length > 0, lastCall.body.model);
   check('system_instruction is a plain string', typeof lastCall.body.system_instruction === 'string');
@@ -631,7 +675,7 @@ try {
   const short = await (await recapPost({ toPage: 3 })).json();
   check('a recap covers from page 1 by default', short.from_page === 1 && short.to_page === 3);
   check('the recap comes back structured',
-    Array.isArray(short.result.narrative) && short.result.keyPoints.length > 0);
+    typeof short.result.summary === 'string' && short.result.summary && short.result.keyPoints.length > 0);
   check('a short range is one call', short.chunks === 1 && calls.length - calledBefore === 1,
     `${calls.length - calledBefore} call(s)`);
   check('the recap carries pages the browser never rendered',
@@ -699,8 +743,8 @@ try {
 
   await page.locator('#recap-go').click();
   await page.waitForSelector('.panel-headline', { timeout: 20000 });
-  check('the panel shows where you are',
-    (await page.locator('#panel-body').textContent()).includes('Where you are'));
+  check('the panel shows the summary',
+    (await page.locator('#panel-body').textContent()).includes('Summary'));
 
   check('the recap draws a diagram', (await page.locator('.recap-diagram svg').count()) === 1);
   check('every node is drawn', (await page.locator('.recap-diagram .dg-node').count()) === 3);
@@ -931,7 +975,194 @@ try {
     .then(() => check('back returns to the library', true))
     .catch(() => check('back returns to the library', false));
 
+  /* ---- printed page numbers and the outline, from a PDF that has both ---- */
+  check('a PDF without an outline hides the contents button', await page.locator('#outline-btn').isHidden());
+
+  const lform = new FormData();
+  lform.append('pdf', new Blob([fs.readFileSync(path.join(HERE, 'fixtures/labelled.pdf'))], { type: 'application/pdf' }), 'labelled.pdf');
+  const ldoc = await (await fetch(`${BASE}/api/documents`, { method: 'POST', body: lform })).json();
+
+  await page.evaluate(() => localStorage.removeItem('spr:outline'));
+  await page.goto(`${BASE}/#/doc/${ldoc.id}`, { waitUntil: 'networkidle' });
+  await page.waitForFunction(() => document.querySelectorAll('.page canvas').length > 0, null, { timeout: 20000 });
+  await page.waitForSelector('#outline:not([hidden]) .outline-link', { timeout: 5000 }).catch(() => {});
+
+  const pageInput = () => page.locator('#page-input').inputValue();
+  check('the toolbar shows the printed number', (await pageInput()) === 'i', `got ${await pageInput()}`);
+  check('and where that is in the file', (await page.locator('#page-physical').textContent()) === '(1 of 6)');
+  check('pages are tagged with their printed number',
+    (await page.locator('.page[data-page="1"] .page-number-tag').textContent()) === 'i');
+
+  // The input shows the target at once; the position only changes once the scroll lands.
+  const jumpTo = async (label, want, physical, name) => {
+    await page.locator('#page-input').fill(label);
+    await page.locator('#page-input').press('Enter');
+    await page.waitForFunction(([w, p]) => document.getElementById('page-input').value === w
+      && document.getElementById('page-physical').textContent === p, [want, physical], { timeout: 8000 })
+      .then(() => check(name, true))
+      .catch(async () => check(name, false,
+        `landed on ${await pageInput()} ${await page.locator('#page-physical').textContent()}`));
+  };
+  await jumpTo('1', '1', '(3 of 6)', 'typing a printed number goes to that page, not the first in the file');
+  await jumpTo('II', 'ii', '(2 of 6)', 'roman numerals are matched regardless of case');
+  await page.locator('#page-input').fill('nonsense');
+  await page.locator('#page-input').press('Enter');
+  check('an unknown page puts the current one back', (await pageInput()) === 'ii');
+
+  check('the outline opens on its own for a PDF that has one', await page.locator('#outline').isVisible());
+  check('the outline shows top-level entries', (await page.locator('#outline-tree > .outline-item').count()) === 3);
+  check('outline entries show printed page numbers',
+    (await page.locator('.outline-item', { hasText: 'Chapter 2' }).locator('.outline-page').textContent()) === '4');
+
+  const chapter1 = page.locator('#outline-tree > .outline-item', { hasText: 'Chapter 1' });
+  check('chapters start collapsed', (await chapter1.getAttribute('aria-expanded')) === 'false');
+  await chapter1.locator('> .outline-row .outline-toggle').click();
+  check('the chevron expands a chapter', (await chapter1.getAttribute('aria-expanded')) === 'true');
+
+  // Let the page jump above finish first: its last smooth-scroll frame would land on top of ours.
+  await page.waitForFunction(() => new Promise((resolve) => {
+    const c = document.getElementById('viewer-container');
+    const before = c.scrollTop;
+    setTimeout(() => resolve(c.scrollTop === before), 150);
+  }), null, { timeout: 5000 });
+  await chapter1.locator('.outline-link', { hasText: 'Section 1.2' }).click();
+  await page.waitForTimeout(400);
+  const landing = await page.evaluate(() => {
+    const c = document.getElementById('viewer-container');
+    const slot = document.querySelector('.page[data-page="5"]');
+    // The entry points 400pt up a 792pt page, so about half way down it.
+    return (c.scrollTop + 16 - slot.offsetTop) / slot.offsetHeight;
+  });
+  check('clicking a section puts its heading at the top of the view', Math.abs(landing - (1 - 400 / 792)) < 0.03,
+    `landed ${landing.toFixed(3)} down the page`);
+  await page.waitForFunction(() => document.querySelector('.outline-row.active')?.textContent.includes('Section 1.2'), null, { timeout: 3000 })
+    .then(() => check('the section being read is highlighted', true))
+    .catch(async () => check('the section being read is highlighted', false,
+      await page.locator('.outline-row.active').textContent().catch(() => 'none')));
+
+  await page.evaluate(() => {
+    const c = document.getElementById('viewer-container');
+    c.scrollTop = c.scrollHeight;
+  });
+  await page.waitForFunction(() => document.querySelector('.outline-row.active')?.textContent.includes('Chapter 2'), null, { timeout: 3000 })
+    .then(() => check('the highlight follows scrolling', true))
+    .catch(() => check('the highlight follows scrolling', false));
+
+  await page.locator('#outline-btn').click();
+  check('the contents button hides the outline', await page.locator('#outline').isHidden());
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForFunction(() => !document.getElementById('outline-btn').hidden, null, { timeout: 5000 });
+  check('a hidden outline stays hidden on reopen', await page.locator('#outline').isHidden());
+  await page.keyboard.press('\\');
+  check('backslash toggles the outline', await page.locator('#outline').isVisible());
+
+  // Following the reader opens a chapter; moving past it closes it again, so a long
+  // scroll does not leave every chapter it passed unfolded.
+  const expanded = () => page.locator('#outline-tree > .outline-item', { hasText: 'Chapter 1' }).getAttribute('aria-expanded');
+  const scrollToFilePage = (n) => page.evaluate((num) => {
+    const c = document.getElementById('viewer-container');
+    c.scrollTop = document.querySelector(`.page[data-page="${num}"]`).offsetTop - c.clientHeight * 0.35 + 10;
+  }, n);
+  await scrollToFilePage(4);
+  await page.waitForFunction(() => document.querySelector('.outline-row.active')?.textContent.includes('Section 1.1'), null, { timeout: 3000 }).catch(() => {});
+  check('reading a section opens its chapter', (await expanded()) === 'true');
+  await scrollToFilePage(6);
+  await page.waitForFunction(() => document.querySelector('.outline-row.active')?.textContent.includes('Chapter 2'), null, { timeout: 3000 }).catch(() => {});
+  check('moving past it closes the chapter again', (await expanded()) === 'false');
+
   check('no uncaught errors in the page', pageErrors.length === 0, pageErrors[0] ?? '');
+
+  /* ---- other providers: Mistral, Groq, OpenRouter and NVIDIA NIM, all on chat completions ---- */
+  for (const [provider, keyVar, baseVar, endpoint] of [
+    ['mistral', 'MISTRAL_API_KEY', 'MISTRAL_API_BASE', '/mistral/chat/completions'],
+    ['groq', 'GROQ_API_KEY', 'GROQ_API_BASE', '/groq/chat/completions'],
+    ['openrouter', 'OPENROUTER_API_KEY', 'OPENROUTER_API_BASE', '/openrouter/chat/completions'],
+    ['nvidia', 'NVIDIA_API_KEY', 'NVIDIA_API_BASE', '/nvidia/chat/completions'],
+  ]) {
+    const prefix = endpoint.slice(0, endpoint.indexOf('/', 1));
+    const altPort = STUB_PORT + 1;
+    altServer = spawn(process.execPath, [path.join(ROOT, 'server/index.js')], {
+      cwd: ROOT,
+      env: {
+        ...process.env,
+        ...NO_PROVIDERS,
+        PORT: String(altPort),
+        DATA_DIR: path.join(tmp, `data-${provider}`),
+        PDF_DIR: path.join(tmp, `pdfs-${provider}`),
+        LLM_PROVIDER: provider,
+        [keyVar]: `${provider}-key`,
+        [baseVar]: `http://localhost:${STUB_PORT}${prefix}`,
+      },
+      stdio: 'ignore',
+    });
+    let health = null;
+    for (let i = 0; i < 100 && !health; i++) {
+      try { health = await (await fetch(`http://localhost:${altPort}/api/health`)).json(); } catch { /* not up yet */ }
+      if (!health) await new Promise((r) => setTimeout(r, 100));
+    }
+    check(`${provider}: health names the provider`, health?.provider === provider && health.aiConfigured, JSON.stringify(health));
+    check(`${provider}: the real .env does not leak into the test`,
+      health?.model === { mistral: 'mistral-small-latest', groq: 'openai/gpt-oss-120b', openrouter: 'openai/gpt-oss-120b', nvidia: 'deepseek-ai/deepseek-v4.1-flash' }[provider], health?.model);
+
+    const before = providerCalls.length;
+    const res = await fetch(`http://localhost:${altPort}/api/explain`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ selection: 'oxidative phosphorylation', context: 'The mitochondrion makes ATP.' }),
+    });
+    const answer = await res.json();
+    check(`${provider}: an explanation arrives`, res.ok && answer.headline === 'oxidative phosphorylation', JSON.stringify(answer).slice(0, 120));
+
+    const call = providerCalls[before];
+    check(`${provider}: posts to ${endpoint}`, call?.path === endpoint, call?.path);
+    check(`${provider}: sends a bearer key`, call?.headers.authorization === `Bearer ${provider}-key`);
+    const turns = call?.body.messages;
+    if (provider === 'nvidia') {
+      // NIM model references want alternating user/assistant turns, so no system role.
+      check('nvidia: instructions ride in a single user turn',
+        turns?.length === 1 && turns[0].role === 'user' && turns[0].content.includes('Highlighted text'));
+    } else {
+      check(`${provider}: system then user turn`,
+        turns?.[0]?.role === 'system' && turns[1]?.role === 'user' && turns[1].content.includes('Highlighted text'));
+    }
+    const format = call?.body.response_format?.json_schema;
+    check(`${provider}: asks for the schema`,
+      call?.body.response_format?.type === 'json_schema'
+        && format?.schema?.properties?.headline?.type === 'string');
+    check(`${provider}: no Gemini-only fields leak through`,
+      call && !('thinking_level' in call.body) && !('generation_config' in call.body));
+    if (provider === 'nvidia') {
+      const retry = providerCalls[before + 1];
+      check('nvidia: a refused response_format falls back to nvext.guided_json',
+        !retry?.body.response_format && retry?.body.nvext?.guided_json?.properties?.headline?.type === 'string');
+      check('nvidia: minimal thinking turns reasoning off', call?.body.reasoning_effort === 'none', call?.body.reasoning_effort);
+    }
+    if (provider === 'openrouter') {
+      const sent = call?.body.response_format?.json_schema;
+      check('openrouter: asks for strict mode with every property required', sent?.strict === true
+        && JSON.stringify(sent.schema?.required) === JSON.stringify(Object.keys(sent.schema?.properties ?? {})));
+      check('openrouter: optional fields become nullable', JSON.stringify(sent?.schema?.properties?.details?.type) === '["array","null"]');
+      check('openrouter: routes only to providers that honour the schema', call?.body.provider?.require_parameters === true);
+      check('openrouter: routes only to providers that do not keep prompts', call?.body.provider?.data_collection === 'deny');
+      check('openrouter: thinking level becomes reasoning effort, not returned',
+        call?.body.reasoning?.effort === 'minimal' && call.body.reasoning.exclude === true, JSON.stringify(call?.body.reasoning));
+      check('openrouter: the output budget leaves room for reasoning', call?.body.max_tokens > 2048, call?.body.max_tokens);
+    }
+    if (provider === 'groq') {
+      const sent = call?.body.response_format?.json_schema;
+      check('groq: asks for strict mode', sent?.strict === true);
+      check('groq: every property is required, as strict mode demands',
+        JSON.stringify(sent?.schema?.required) === JSON.stringify(Object.keys(sent?.schema?.properties ?? {})));
+      check('groq: optional fields become nullable', JSON.stringify(sent?.schema?.properties?.details?.type) === '["array","null"]',
+        JSON.stringify(sent?.schema?.properties?.details?.type));
+      check('groq: nested objects are closed too', sent?.schema?.properties?.details?.items?.additionalProperties === false);
+      check('groq: minimal thinking maps to low reasoning effort', call?.body.reasoning_effort === 'low', call?.body.reasoning_effort);
+      check('groq: the reasoning does not come back', call?.body.include_reasoning === false);
+      check('groq: the output budget leaves room for reasoning', call?.body.max_completion_tokens > 2048, call?.body.max_completion_tokens);
+    }
+
+    altServer.kill();
+    altServer = null;
+  }
 } catch (err) {
   fail.push(` FAIL  test run threw: ${err.message}`);
 } finally {

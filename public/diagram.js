@@ -116,8 +116,9 @@ function arrowHead(parent, x1, y1, x2, y2, colour) {
  * @param {object} spec           {kind, caption, nodes, edges}
  * @param {Element} container
  * @param {(page:number)=>void} [onGoToPage]  called when a node with a page is clicked
+ * @param {(page:number)=>string} [pageLabel]  how to print a page number (the book's own)
  */
-export function renderDiagram(spec, container, onGoToPage) {
+export function renderDiagram(spec, container, onGoToPage, pageLabel = String) {
   // A previous drawing in this slot has watchers on the theme; drop them first.
   container._diagramCleanup?.();
   container.replaceChildren();
@@ -201,12 +202,12 @@ export function renderDiagram(spec, container, onGoToPage) {
 
     const cx = node.x + node.w / 2;
     text(group, cx, node.y + (node.page ? node.h / 2 : node.h / 2 + 5), node.label, 'dg-label');
-    if (node.page) text(group, cx, node.y + node.h / 2 + 15, `p. ${node.page}`, 'dg-page');
+    if (node.page) text(group, cx, node.y + node.h / 2 + 15, `p. ${pageLabel(node.page)}`, 'dg-page');
 
     if (node.page && onGoToPage) {
       group.setAttribute('tabindex', '0');
       group.setAttribute('role', 'button');
-      group.setAttribute('aria-label', `${node.label} — go to page ${node.page}`);
+      group.setAttribute('aria-label', `${node.label} — go to page ${pageLabel(node.page)}`);
       group.addEventListener('click', () => onGoToPage(node.page));
       group.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onGoToPage(node.page); }

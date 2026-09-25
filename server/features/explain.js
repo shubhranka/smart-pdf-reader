@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
-import { GEMINI_MODEL } from './config.js';
-import { cache } from './db.js';
-import { ExplainError, requireKey, callGemini } from './gemini.js';
+import { cache } from '../db.js';
+import { ExplainError, requireKey, callModel, MODEL } from '../llm/index.js';
 
 // Re-exported so the many places that already import it from here keep working.
 export { ExplainError };
@@ -9,7 +8,8 @@ export { ExplainError };
 const MAX_CONTEXT = 4000;
 const MAX_SELECTION = 6000;
 
-// Plain JSON Schema — the Interactions API takes it under response_format.schema.
+// Plain JSON Schema — Gemini takes it under response_format.schema, the chat-completions
+// providers under response_format.json_schema.schema.
 const RESPONSE_SCHEMA = {
   type: 'object',
   properties: {
@@ -76,12 +76,12 @@ export async function explain({ selection, context = '' }) {
 
   const kind = classify(trimmed);
   const contextWindow = context.slice(0, MAX_CONTEXT);
-  const key = createHash('sha256').update(`${GEMINI_MODEL}\u0000${trimmed}\u0000${contextWindow}`).digest('hex');
+  const key = createHash('sha256').update(`${MODEL}\u0000${trimmed}\u0000${contextWindow}`).digest('hex');
 
   const hit = cache.get(key);
   if (hit) return { ...hit, cached: true };
 
-  const { json, text } = await callGemini({
+  const { json, text } = await callModel({
     systemInstruction: SYSTEM_INSTRUCTION,
     input: buildPrompt(trimmed, contextWindow, kind),
     schema: RESPONSE_SCHEMA,

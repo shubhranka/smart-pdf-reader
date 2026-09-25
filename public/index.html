@@ -40,6 +40,10 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
     </button>
 
+    <button id="outline-btn" class="icon-btn" title="Contents" aria-label="Show contents" aria-controls="outline" aria-expanded="false" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 4.5v15M5.8 8.5h1.6M5.8 11.5h1.6"/></svg>
+    </button>
+
     <h2 id="doc-title" class="doc-title"></h2>
 
     <div class="toolbar-group page-nav">
@@ -47,8 +51,9 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 15l-6-6-6 6"/></svg>
       </button>
       <label class="page-indicator">
-        <input id="page-input" type="number" min="1" value="1" aria-label="Current page">
-        <span>/ <span id="page-count">–</span></span>
+        <input id="page-input" type="text" inputmode="text" autocomplete="off" spellcheck="false" value="1" aria-label="Current page">
+        <span id="page-of">/ <span id="page-count">–</span></span>
+        <span id="page-physical" class="page-physical" hidden></span>
       </label>
       <button id="next-page" class="icon-btn" title="Next page" aria-label="Next page">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
@@ -64,6 +69,10 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
       </button>
     </div>
+
+    <button id="dark-pages-btn" class="icon-btn" title="Dark pages" aria-label="Dark pages" aria-pressed="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>
+    </button>
 
     <button id="recap-btn" class="icon-btn" title="Catch me up" aria-label="Catch me up on what I have read">
       <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -85,15 +94,23 @@
 
   <div id="save-badge" class="save-badge" hidden>Saved</div>
 
-  <div id="viewer-container" class="viewer-container">
-    <div id="viewer" class="viewer"></div>
+  <div class="reader-body">
+    <!-- The PDF's own outline, when it has one -->
+    <aside id="outline" class="outline" hidden aria-label="Contents">
+      <div class="outline-head"><strong>Contents</strong></div>
+      <ul id="outline-tree" class="outline-tree"></ul>
+    </aside>
+
+    <div id="viewer-container" class="viewer-container">
+      <div id="viewer" class="viewer"></div>
+    </div>
   </div>
 
   <!-- Range picker, dropped from the toolbar button -->
   <div id="recap-range" class="recap-range" hidden>
     <div class="recap-range-row">
-      <label>From page <input id="recap-from" type="number" min="1" value="1"></label>
-      <label>To page <input id="recap-to" type="number" min="1"></label>
+      <label>From page <input id="recap-from" type="text" autocomplete="off" spellcheck="false" value="1"></label>
+      <label>To page <input id="recap-to" type="text" autocomplete="off" spellcheck="false"></label>
     </div>
     <p id="recap-cut" class="recap-cut" hidden>
       up to “<span id="recap-cut-text"></span>”

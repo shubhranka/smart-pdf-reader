@@ -2,9 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import { PDF_DIR } from './config.js';
-import { pageText } from './db.js';
-import { ExplainError } from './gemini.js';
+import { PDF_DIR } from '../config.js';
+import { pageText } from '../db.js';
+import { ExplainError } from '../errors.js';
 
 /**
  * Text for a range of pages, extracted server-side and cached per page.

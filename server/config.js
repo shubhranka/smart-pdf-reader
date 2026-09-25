@@ -14,15 +14,11 @@ export const PDF_DIR = process.env.PDF_DIR || path.join(ROOT, 'pdfs');
 export const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, 'data');
 export const PUBLIC_DIR = path.join(ROOT, 'public');
 
-export const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
-export const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
-// Overridable so tests can point at a stub instead of the real API.
-export const GEMINI_API_BASE = process.env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com/v1beta';
-// Pins the request/response shape of the Interactions API. Google's own examples send it.
-export const GEMINI_API_REVISION = process.env.GEMINI_API_REVISION || '2026-05-20';
-// Models differ on which levels they accept, so this is both configurable and, on
-// rejection, corrected from what the API says it allows.
-export const GEMINI_THINKING_LEVEL = process.env.GEMINI_THINKING_LEVEL || 'low';
+/**
+ * Read a setting, falling back when it is unset or empty. Provider modules own their
+ * own settings (see llm/providers/) but read them through here, so .env is loaded first.
+ */
+export const env = (name, fallback = '') => process.env[name] || fallback;
 
 // Recap sizing. Not context limits — a flash model would swallow a whole book in one
 // call. They are quality and cost limits: past roughly 25 pages a single summary goes
