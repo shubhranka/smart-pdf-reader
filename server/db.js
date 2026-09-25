@@ -41,6 +41,14 @@ db.exec(`
     result     TEXT NOT NULL,
     created_at TEXT NOT NULL
   );
+
+  -- Picture lookups are cached separately from explanations, so a source being
+  -- briefly unreachable is not baked into the explanation for good.
+  CREATE TABLE IF NOT EXISTS image_cache (
+    query      TEXT PRIMARY KEY,
+    result     TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
 `);
 
 const now = () => new Date().toISOString();
@@ -106,6 +114,23 @@ export const lookups = {
       'SELECT id, page, selection, kind, result, created_at FROM lookups WHERE doc_id = ? ORDER BY id DESC LIMIT ?'
     ).all(docId, limit).map((r) => ({ ...r, result: JSON.parse(r.result) }));
   },
+
+  // Guards against the same term filling the list twice, and lets a deleted
+  // lookup come back if you highlight it again.
+  exists(docId, page, selection) {
+    return Boolean(db.prepare(
+      'SELECT 1 FROM lookups WHERE doc_id = ? AND page = ? AND selection = ? LIMIT 1'
+    ).get(docId, page, selection));
+  },
+
+  remove(id) {
+    const { changes } = db.prepare('DELETE FROM lookups WHERE id = ?').run(id);
+    return changes > 0;
+  },
+
+  removeAllForDoc(docId) {
+    return db.prepare('DELETE FROM lookups WHERE doc_id = ?').run(docId).changes;
+  },
 };
 
 export const cache = {
@@ -119,6 +144,21 @@ export const cache = {
       `INSERT INTO explain_cache (key, result, created_at) VALUES (?, ?, ?)
        ON CONFLICT(key) DO UPDATE SET result = excluded.result`
     ).run(key, JSON.stringify(result), now());
+  },
+};
+
+export const imageCache = {
+  /** undefined = never looked up; null = looked up and nothing suitable was found. */
+  get(query) {
+    const row = db.prepare('SELECT result FROM image_cache WHERE query = ?').get(query);
+    return row ? JSON.parse(row.result) : undefined;
+  },
+
+  set(query, result) {
+    db.prepare(
+      `INSERT INTO image_cache (query, result, created_at) VALUES (?, ?, ?)
+       ON CONFLICT(query) DO UPDATE SET result = excluded.result`
+    ).run(query, JSON.stringify(result ?? null), now());
   },
 };
 

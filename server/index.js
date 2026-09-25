@@ -5,10 +5,11 @@ import crypto from 'node:crypto';
 import express from 'express';
 import multer from 'multer';
 
-import { PORT, PDF_DIR, PUBLIC_DIR, ROOT, GEMINI_API_KEY, GEMINI_MODEL } from './config.js';
+import { PORT, PDF_DIR, PUBLIC_DIR, ROOT, GEMINI_API_KEY, GEMINI_MODEL, IMAGE_USER_AGENT, EXTRA_IMAGE_HOSTS } from './config.js';
 import { documents, progress, lookups } from './db.js';
 import { explain, ExplainError } from './explain.js';
 import { inspectPdf } from './pdfinfo.js';
+import { findImage, ALLOWED_IMAGE_HOSTS } from './images.js';
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -151,6 +152,17 @@ app.get('/api/documents/:id/lookups', (req, res) => {
   res.json(lookups.listByDoc(req.params.id));
 });
 
+app.delete('/api/documents/:id/lookups', (req, res) => {
+  res.json({ removed: lookups.removeAllForDoc(req.params.id) });
+});
+
+app.delete('/api/lookups/:id', (req, res) => {
+  const id = Number.parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Not a lookup id.' });
+  if (!lookups.remove(id)) return res.status(404).json({ error: 'That lookup is already gone.' });
+  res.json({ ok: true });
+});
+
 app.post('/api/explain', asyncRoute(async (req, res) => {
   const { docId, page, selection, context } = req.body ?? {};
   if (typeof selection !== 'string' || !selection.trim()) {
@@ -159,17 +171,59 @@ app.post('/api/explain', asyncRoute(async (req, res) => {
   console.log('selection', selection);
   const result = await explain({ selection, context: typeof context === 'string' ? context : '' });
 
-  if (docId && documents.get(docId) && !result.cached) {
-    lookups.insert({
-      docId,
-      page: Number.parseInt(page, 10) || 1,
-      selection: selection.trim().replace(/\s+/g, ' '),
-      kind: result.kind,
-      result,
-    });
+  const pageNo = Number.parseInt(page, 10) || 1;
+  const term = selection.trim().replace(/\s+/g, ' ');
+
+  if (docId && documents.get(docId) && !lookups.exists(docId, pageNo, term)) {
+    lookups.insert({ docId, page: pageNo, selection: term, kind: result.kind, result });
   }
 
   res.json(result);
+}));
+
+/**
+ * Pictures are fetched separately from the explanation so a slow encyclopaedia never
+ * holds up the meaning, and proxied rather than hotlinked so the browser never talks
+ * to a third party about what you are reading.
+ */
+app.get('/api/image', asyncRoute(async (req, res) => {
+  const image = await findImage(req.query.q);
+  if (!image) return res.json({ image: null });
+
+  res.json({
+    image: { ...image, url: `/api/image/file?src=${encodeURIComponent(image.url)}` },
+  });
+}));
+
+app.get('/api/image/file', asyncRoute(async (req, res) => {
+  let target;
+  try {
+    target = new URL(String(req.query.src));
+  } catch {
+    return res.status(400).json({ error: 'Not a URL.' });
+  }
+
+  // Only the hosts our own sources hand back, so this cannot be pointed anywhere else.
+  // Plain http is permitted solely for hosts an operator listed in EXTRA_IMAGE_HOSTS,
+  // which is how the test suite points this at a local stub.
+  const protocolOk = target.protocol === 'https:'
+    || (target.protocol === 'http:' && EXTRA_IMAGE_HOSTS.includes(target.hostname));
+  if (!protocolOk || !ALLOWED_IMAGE_HOSTS.has(target.hostname)) {
+    return res.status(403).json({ error: 'That image host is not allowed.' });
+  }
+
+  const upstream = await fetch(target, {
+    headers: { 'user-agent': IMAGE_USER_AGENT, accept: 'image/*' },
+    signal: AbortSignal.timeout(10_000),
+  });
+  const type = upstream.headers.get('content-type') ?? '';
+  if (!upstream.ok || !type.startsWith('image/')) {
+    return res.status(502).json({ error: 'Could not fetch that image.' });
+  }
+
+  res.type(type);
+  res.set('cache-control', 'public, max-age=604800, immutable');
+  res.send(Buffer.from(await upstream.arrayBuffer()));
 }));
 
 /* -------------------------------- static --------------------------------- */

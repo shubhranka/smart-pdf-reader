@@ -4,8 +4,9 @@ A local PDF reader that remembers where you stopped and explains anything you hi
 
 - **Resumes automatically.** Your position is saved as you scroll, per document, and restored when you reopen it.
 - **Highlight to understand.** Select a word, a phrase or a whole paragraph and press *What does this mean?* Gemini answers with the general meaning plus what it means *in this document*, using the surrounding page as context.
+- **A picture when one helps.** If the term is something you can actually look at — an organism, a structure, a data structure normally taught with a diagram — the Meaning section shows one from Wikipedia, Wikimedia Commons or Openverse, credited and linked. Abstract terms get no picture, which is the point.
 - **Repeat lookups are free.** Identical selections are cached, so re-highlighting a term costs nothing.
-- **Lookup history** per document, so you can revisit terms and jump back to the page they came from.
+- **Lookup history** per document. Clicking one scrolls to the exact words on the page and highlights them, rather than dumping you at the top of the page. Delete them one at a time or clear the lot.
 
 Everything runs on your machine. PDFs live in `pdfs/`, state in a SQLite file under `data/`.
 
@@ -40,13 +41,16 @@ Drop a PDF onto the library page, or click to choose one. Click a document to op
 | Highlight text | Offers an explanation |
 | Scroll | Saves your page automatically |
 | `←` / `→` buttons, or type a page number | Jump around |
+| Pinch on the trackpad | Zooms the PDF, not the browser |
 | `Cmd`/`Ctrl` `+` / `-` / `0` | Zoom in, out, back to 100% |
-| History button (top right) | Past lookups in this document |
+| List button (top right) | Past lookups — click one to jump to the words and highlight them, or delete it |
 | `Esc` | Close a panel, then leave the document |
 
-Zoom runs from 50% to 500% in round steps (50, 75, 100, 125, 150, 200, 250, 300, 400, 500).
-Past about 150% a page grows wider than the window and the view scrolls sideways as well as down;
-zooming keeps whatever was in the middle of the screen in the middle.
+Pinching on the trackpad zooms the document rather than the browser window, and zooms
+around the pointer — whatever is under your fingers stays under them. The buttons and
+keyboard move through round steps (50, 75, 100, 125, 150, 200, 250, 300, 400, 500%) while
+pinching moves continuously between them. Past about 150% a page grows wider than the
+window and the view scrolls sideways as well as down.
 
 Re-uploading a PDF you already have reopens it rather than making a duplicate — documents are identified by their content hash.
 
@@ -88,6 +92,34 @@ Some details worth knowing if you extend it:
   answer read back out of the `steps` array. `outputText()` in `explain.js` takes the trailing
   run of text blocks, the same rule the SDKs' `output_text` follows, so reasoning or tool
   blocks earlier in a response are skipped.
+- **Pinch-zoom previews, then sharpens.** Re-rendering the PDF on every frame of a pinch
+  would be unusable, so a gesture only resizes each page box and scales the pixels already
+  drawn with a CSS transform — canvas and text layer share one wrapper, which keeps
+  selection lined up with the glyphs mid-gesture. 180 ms after the gesture stops, the pages
+  re-render at the new size. Pages already on screen keep their old rendering until the
+  sharp one is ready, so nothing flashes blank. Page boxes derive their size from a single
+  `--zoom` variable on the viewer, so a pinch frame costs a couple of style writes rather
+  than two per page — which matters at nine hundred pages.
+- **Finding a phrase again** is done by matching against the text layer's whole text, not
+  span by span: PDF text layers break words across spans mid-word, so `findPhrase` in
+  `reader.js` tries the phrase with whitespace collapsed, then with it removed entirely.
+  The highlight is drawn as boxes inside `.page-inner`, under the text layer so the words
+  stay selectable, and in the wrapper's own coordinates so the zoom transform scales it.
+- **Pictures are opt-in per lookup.** Gemini returns an `imageQuery` only when a picture
+  would tell you something the words do not, and the app tries Wikipedia, then a Wikipedia
+  search, then Wikimedia Commons and Openverse together. A result is only used if the whole
+  phrase appears in its title — without that, keyword search answers "write-ahead log" with
+  a photo of a dragonfly and "B-tree" with a fractal tree. An irrelevant picture is worse
+  than none here, so no picture is a perfectly good answer.
+- **Images are proxied, not hotlinked**, through `/api/image/file`, which accepts only the
+  handful of hosts our own sources return. That keeps the browser from telling a third
+  party what you are reading, and stops the endpoint being used to fetch anything else.
+  They are fetched after the explanation is already on screen, so a slow encyclopaedia
+  never delays the meaning.
+- **`thinking_level` corrects itself.** Models disagree about which levels they accept —
+  `gemini-3.8-flash` rejects `minimal`. When the API refuses one it names the ones it takes,
+  so `explain.js` retries with the cheapest allowed and remembers it, rather than making you
+  edit a config file. Override with `GEMINI_THINKING_LEVEL` if you want a specific level.
 - **Rendering is memory-capped.** A page at 500% on a retina screen would otherwise back a
   ~190 MB canvas. `MAX_CANVAS_PIXELS` caps any single page and `RENDER_BUDGET_PIXELS` caps
   the total across rendered pages, so pages you have scrolled away from are released early

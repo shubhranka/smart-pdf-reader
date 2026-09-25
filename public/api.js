@@ -52,6 +52,12 @@ export const api = {
 
   getLookups: (id) => request(`/api/documents/${id}/lookups`),
 
+  findImage: (query) => request(`/api/image?q=${encodeURIComponent(query)}`),
+
+  deleteLookup: (id) => request(`/api/lookups/${id}`, { method: 'DELETE' }),
+
+  clearLookups: (docId) => request(`/api/documents/${docId}/lookups`, { method: 'DELETE' }),
+
   explain: (payload) =>
     request('/api/explain', {
       method: 'POST',
