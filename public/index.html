@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart PDF Reader</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23b44a1e'/%3E%3Cpath d='M9 8h11l4 4v12H9z' fill='none' stroke='%23fff' stroke-width='2' stroke-linejoin='round'/%3E%3Cpath d='M12 16h8M12 20h5' stroke='%23fff' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/vendor/pdfjs/web/pdf_viewer.css">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<!-- ============================ LIBRARY ============================ -->
+<main id="library" class="view">
+  <header class="library-header">
+    <h1>Smart PDF Reader</h1>
+    <p class="subtitle">Picks up where you left off. Highlight anything to find out what it means.</p>
+  </header>
+
+  <label id="dropzone" for="file-input" tabindex="0">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L8 8m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+    <strong>Drop a PDF here</strong>
+    <span>or click to choose one</span>
+    <input type="file" id="file-input" accept="application/pdf,.pdf" hidden>
+  </label>
+
+  <div id="upload-status" class="upload-status" hidden></div>
+
+  <section class="doc-list-wrap">
+    <h2>Your documents</h2>
+    <ul id="doc-list" class="doc-list"></ul>
+    <p id="empty-library" class="empty" hidden>Nothing here yet — add a PDF to get started.</p>
+  </section>
+</main>
+
+<!-- ============================= READER ============================= -->
+<div id="reader" class="view" hidden>
+  <header class="toolbar">
+    <button id="back-btn" class="icon-btn" title="Back to library" aria-label="Back to library">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+    </button>
+
+    <h2 id="doc-title" class="doc-title"></h2>
+
+    <div class="toolbar-group page-nav">
+      <button id="prev-page" class="icon-btn" title="Previous page" aria-label="Previous page">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 15l-6-6-6 6"/></svg>
+      </button>
+      <label class="page-indicator">
+        <input id="page-input" type="number" min="1" value="1" aria-label="Current page">
+        <span>/ <span id="page-count">–</span></span>
+      </label>
+      <button id="next-page" class="icon-btn" title="Next page" aria-label="Next page">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+    </div>
+
+    <div class="toolbar-group">
+      <button id="zoom-out" class="icon-btn" title="Zoom out" aria-label="Zoom out">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>
+      </button>
+      <span id="zoom-level" class="zoom-level">100%</span>
+      <button id="zoom-in" class="icon-btn" title="Zoom in" aria-label="Zoom in">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+    </div>
+
+    <button id="history-btn" class="icon-btn" title="Lookup history" aria-label="Lookup history">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5"/></svg>
+    </button>
+  </header>
+
+  <div id="save-badge" class="save-badge" hidden>Saved</div>
+
+  <div id="viewer-container" class="viewer-container">
+    <div id="viewer" class="viewer"></div>
+  </div>
+
+  <!-- Floating button that follows a text selection -->
+  <button id="explain-btn" class="explain-btn" hidden>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.8H20l-4.9 3.6 1.9 5.8-5-3.6-5 3.6 1.9-5.8L4 8.8h6.1z"/></svg>
+    What does this mean?
+  </button>
+
+  <!-- Result panel -->
+  <aside id="panel" class="panel" hidden>
+    <div class="panel-head">
+      <span id="panel-kind" class="kind-chip"></span>
+      <button id="panel-close" class="icon-btn" title="Close" aria-label="Close">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div id="panel-body" class="panel-body"></div>
+  </aside>
+
+  <!-- Lookup history drawer -->
+  <aside id="history" class="history" hidden>
+    <div class="panel-head">
+      <strong>Lookups in this document</strong>
+      <button id="history-close" class="icon-btn" title="Close" aria-label="Close">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <ul id="history-list" class="history-list"></ul>
+    <p id="history-empty" class="empty" hidden>Nothing looked up yet.</p>
+  </aside>
+</div>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>
