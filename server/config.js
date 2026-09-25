@@ -24,6 +24,19 @@ export const GEMINI_API_REVISION = process.env.GEMINI_API_REVISION || '2026-05-2
 // rejection, corrected from what the API says it allows.
 export const GEMINI_THINKING_LEVEL = process.env.GEMINI_THINKING_LEVEL || 'low';
 
+// Recap sizing. Not context limits — a flash model would swallow a whole book in one
+// call. They are quality and cost limits: past roughly 25 pages a single summary goes
+// shallow and front-loaded, and re-running one re-pays for everything. Overridable so
+// the test suite can force either path on a small fixture.
+export const RECAP_BUDGET_CHARS = Number(process.env.RECAP_BUDGET_CHARS) || 60_000;
+export const RECAP_CHUNK_CHARS = Number(process.env.RECAP_CHUNK_CHARS) || 48_000;
+// What actually bounds a recap's cost is RECAP_MAX_PAGES: at ~20 pages a chunk, 300
+// pages is about 15 calls. This is the guard for a document whose pages are far denser
+// than that, not the main dial.
+export const RECAP_MAX_CHUNKS = Number(process.env.RECAP_MAX_CHUNKS) || 24;
+export const RECAP_MAX_PAGES = Number(process.env.RECAP_MAX_PAGES) || 300;
+export const RECAP_CONCURRENCY = Number(process.env.RECAP_CONCURRENCY) || 3;
+
 // Wikimedia asks that clients identify themselves; set a contact address here if you
 // start making heavy use of it. https://foundation.wikimedia.org/wiki/Policy:User-Agent_policy
 export const IMAGE_USER_AGENT = process.env.IMAGE_USER_AGENT

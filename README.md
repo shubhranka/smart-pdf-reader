@@ -7,6 +7,7 @@ A local PDF reader that remembers where you stopped and explains anything you hi
 - **A picture when one helps.** If the term is something you can actually look at — an organism, a structure, a data structure normally taught with a diagram — the Meaning section shows one from Wikipedia, Wikimedia Commons or Openverse, credited and linked. Abstract terms get no picture, which is the point.
 - **Repeat lookups are free.** Identical selections are cached, so re-highlighting a term costs nothing.
 - **Lookup history** per document. Clicking one scrolls to the exact words on the page and highlights them, rather than dumping you at the top of the page. Delete them one at a time or clear the lot.
+- **Catch me up.** Ask for a recap of everything from the start of the book up to where you are — or up to a page you type, or up to a line you select. You get where you are, what you have covered, the key points and terms with the pages they came from, and **a hand-drawn diagram of how the parts connect**. Recaps are saved, so "what I knew at page 40" stays reachable.
 
 Everything runs on your machine. PDFs live in `pdfs/`, state in a SQLite file under `data/`.
 
@@ -38,8 +39,9 @@ Drop a PDF onto the library page, or click to choose one. Click a document to op
 
 | | |
 |---|---|
-| Highlight text | Offers an explanation |
+| Highlight text | Offers an explanation, or a recap up to that line |
 | Scroll | Saves your page automatically |
+| Clock button (top right) | *Catch me up* — pick a range and get a recap with a diagram |
 | `←` / `→` buttons, or type a page number | Jump around |
 | Pinch on the trackpad | Zooms the PDF, not the browser |
 | `Cmd`/`Ctrl` `+` / `-` / `0` | Zoom in, out, back to 100% |
@@ -61,12 +63,16 @@ public/            the browser side, no build step
   app.js             hash routing: library  <->  #/doc/<id>
   library.js         upload, drag-and-drop, document list
   reader.js          PDF.js viewer, scroll tracking, selection, panels
+  diagram.js         lays out and sketches a recap's diagram with rough.js
   api.js             fetch wrappers
 
 server/
   index.js           Express routes
   db.js              SQLite schema and queries (node:sqlite, no native build)
-  explain.js         Gemini call, prompt construction, response cache
+  gemini.js          the Gemini transport: wire format, errors, thinking level
+  explain.js         lookup prompt, schema and response cache
+  recap.js           recap prompts, one call vs map-reduce, chunk cache
+  pagetext.js        server-side page text, cached per page, and the line cut
   pdfinfo.js         page count and title, read server-side on upload
   config.js          env and paths
 
@@ -74,6 +80,42 @@ test/e2e.mjs       drives the real UI in Chrome against a stub Gemini
 ```
 
 Some details worth knowing if you extend it:
+
+- **Page text is extracted on the server, not taken from the browser.** The viewer only
+  captures text for pages it has actually drawn, so everything you scrolled past — and any
+  page you reached by typing its number — has none. `pagetext.js` pulls the text with the same
+  pdf.js build `pdfinfo.js` uses and caches it per page in `page_text`; a document id is a
+  content hash, so that text can never go stale. Two details earn their keep: pdf.js emits
+  explicit space items between words, so the pieces are joined with **no separator** (the
+  browser's `join(' ')` puts spaces inside words), and words broken across a line end are
+  rejoined — the hyphen there is usually **U+2010, not ASCII `-`**, which a naive `/-$/`
+  misses entirely. Running heads are dropped by counting repeated first and last lines.
+- **A recap is one call when it can be.** Under `RECAP_BUDGET_CHARS` (~26 pages) the whole
+  range goes to the model at once. Above it the range is summarised in chunks and the notes
+  combined — not because the window is too small, a flash model would swallow a whole book,
+  but because a single call over a hundred pages goes shallow and front-loaded, and because
+  chunks can be reused. `RECAP_MAX_PAGES` is what bounds the cost: at roughly twenty pages a
+  chunk, the 300-page maximum is about fifteen calls.
+- **Chunk boundaries come from the document, not the request.** Chunks are packed from page 1
+  at a fixed size every time, so reading further reuses the notes already paid for instead of
+  re-cutting the same pages under different boundaries. On a real book, recaps to page 100,
+  200 and 300 all start `1-32, 33-49, 50-70, 71-89` — extending one re-pays for the single
+  partial chunk it ended in the middle of. Sizing chunks from the *range* instead would look
+  tidier and would quietly destroy this, which is why the size is a constant. The cache key
+  includes a hash of the chunk's own text, so tuning the extraction rules invalidates it
+  automatically, and a recap cut mid-page keys correctly with no special case.
+- **The recap's diagram is a typed graph, never SVG from the model.** Asking a model for
+  coordinates is how model-drawn diagrams fail, so it returns nodes and labelled edges and
+  nothing else; `recap.js` drops edges that name a node that does not exist, and
+  `public/diagram.js` decides the layout, where the panel's real width is known. rough.js
+  writes its colours into the paths it generates, so the sketch is **redrawn on a theme
+  change** — otherwise it keeps the old palette while the labels, which are plain text styled
+  by CSS, follow the new one.
+- **A lookup and a recap want different amounts of thinking.** A definition is recall, so it
+  asks for `minimal`. A recap is selection and ordering across tens of thousands of words, so
+  it asks for `low` — and chunk notes go back to `minimal`, because that cost is multiplied by
+  every chunk. Models differ on which levels they accept; `gemini.js` reads the allowed values
+  out of a rejection and remembers them, per level asked for.
 
 - **Pages render lazily.** Only pages near the viewport hold a canvas; the rest are
   placeholders sized from page 1, so a 900-page PDF opens instantly and stays responsive.

@@ -30,6 +30,7 @@ const check = (name, ok, extra = '') => {
 
 /* ---- stub Gemini: answers like the Interactions API, no network, no key, no cost ---- */
 let lastCall = null;
+const calls = [];          // every model call, so the map-reduce passes can be counted
 const imageCalls = [];
 const thinkingLevels = [];
 // smallest valid PNG
@@ -75,36 +76,77 @@ const stub = http.createServer((req, res) => {
     }
 
     lastCall = { path: req.url, headers: req.headers, body: JSON.parse(raw || '{}') };
+    calls.push(lastCall);
     thinkingLevels.push(lastCall.body.generation_config?.thinking_level);
 
     // Some models refuse 'minimal'; the app should correct itself rather than fail.
-    if (lastCall.body.generation_config?.thinking_level === 'minimal') {
+    if (lastCall.body.generation_config?.thinking_level === 'minimal'
+        && !lastCall.body.system_instruction?.startsWith('You are taking notes')) {
       res.writeHead(400, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ error: { message:
         "'minimal' is not a supported thinking level for this model. Allowed values are: high, low, medium." } }));
     }
 
+    // Explanations, chunk notes and recaps all post to /interactions, so the shape
+    // asked for is the only thing that tells them apart.
+    const props = lastCall.body.response_format?.schema?.properties ?? {};
+    const answer = props.narrative?.type === 'array' ? RECAP_ANSWER
+      : props.points ? CHUNK_ANSWER
+      : EXPLAIN_ANSWER;
+
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({
       id: 'interaction-test',
       status: 'completed',
-      steps: [{
-        type: 'model_output',
-        content: [{ type: 'text', text: JSON.stringify({
-          headline: 'oxidative phosphorylation',
-          kind: 'phrase',
-          meaning: 'The process that makes ATP using energy released as electrons pass down the respiratory chain.',
-          inContext: 'The chapter uses it as the mitochondrion\u2019s defining job.',
-          imageQuery: 'mitochondrion',
-          details: [
-            { label: 'Part of speech', value: 'noun phrase' },
-            { label: 'Example', value: 'Most ATP comes from oxidative phosphorylation.' },
-          ],
-        }) }],
-      }],
+      steps: [{ type: 'model_output', content: [{ type: 'text', text: JSON.stringify(answer) }] }],
     }));
   });
 });
+
+const EXPLAIN_ANSWER = {
+  headline: 'oxidative phosphorylation',
+  kind: 'phrase',
+  meaning: 'The process that makes ATP using energy released as electrons pass down the respiratory chain.',
+  inContext: 'The chapter uses it as the mitochondrion\u2019s defining job.',
+  imageQuery: 'mitochondrion',
+  details: [
+    { label: 'Part of speech', value: 'noun phrase' },
+    { label: 'Example', value: 'Most ATP comes from oxidative phosphorylation.' },
+  ],
+};
+
+const RECAP_ANSWER = {
+  title: 'Bioenergetics so far',
+  whereYouAre: 'A cell-biology text. You have reached the membrane transport sections.',
+  narrative: ['The chapter opens on the mitochondrion.', 'It then builds up chemiosmotic coupling.'],
+  keyPoints: [{ point: 'ATP is made from a proton gradient.', page: 2 }],
+  keyTerms: [{ term: 'chemiosmotic coupling', meaning: 'Potential into chemical bonds.', page: 1 }],
+  openThreads: ['How the gradient is re-established.'],
+  diagram: {
+    kind: 'flow',
+    caption: 'How the gradient becomes ATP',
+    nodes: [
+      { id: 'grad', label: 'Proton gradient', page: 2 },
+      { id: 'synthase', label: 'ATP synthase', page: 3 },
+      { id: 'atp', label: 'ATP' },
+    ],
+    edges: [
+      { from: 'grad', to: 'synthase', label: 'drives' },
+      { from: 'synthase', to: 'atp', label: 'phosphorylates' },
+      { from: 'atp', to: 'ghost', label: 'dangling' },   // names no node: must be dropped
+    ],
+  },
+};
+
+const CHUNK_ANSWER = {
+  pageRange: '1-2',
+  narrative: 'These pages restate the mitochondrion as the site of oxidative phosphorylation.',
+  points: ['ATP comes from a proton gradient.'],
+  terms: [{ term: 'proton gradient', meaning: 'A difference across a membrane.' }],
+  entities: ['mitochondrion'],
+  threads: [],
+  endsWith: 'Stops mid-transport.',
+};
 
 const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'spr-test-'));
 let server, browser;
@@ -132,6 +174,10 @@ try {
       COMMONS_API_BASE: `http://localhost:${STUB_PORT}`,
       OPENVERSE_API_BASE: `http://localhost:${STUB_PORT}`,
       EXTRA_IMAGE_HOSTS: 'localhost',
+      // Small enough that the nine-page fixture exercises both the single-call path
+      // (pages 1-3) and the map-reduce one (pages 1-8).
+      RECAP_BUDGET_CHARS: '8000',
+      RECAP_CHUNK_CHARS: '5000',
       GEMINI_THINKING_LEVEL: 'minimal',
     },
     stdio: 'ignore',
@@ -573,6 +619,129 @@ try {
 
   check('deleting an unknown lookup 404s',
     (await fetch(`${BASE}/api/lookups/999999`, { method: 'DELETE' })).status === 404);
+
+  /* ---- recap: the range, the cut, and one call vs several ---- */
+  const recapPost = (body) => fetch(`${BASE}/api/recap`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ docId: doc.id, ...body }),
+  });
+
+  let calledBefore = calls.length;
+  const short = await (await recapPost({ toPage: 3 })).json();
+  check('a recap covers from page 1 by default', short.from_page === 1 && short.to_page === 3);
+  check('the recap comes back structured',
+    Array.isArray(short.result.narrative) && short.result.keyPoints.length > 0);
+  check('a short range is one call', short.chunks === 1 && calls.length - calledBefore === 1,
+    `${calls.length - calledBefore} call(s)`);
+  check('the recap carries pages the browser never rendered',
+    lastCall.body.input.includes('marker 3131'));
+  check('the recap stops at the page asked for', !lastCall.body.input.includes('marker 4141'));
+  check('a recap thinks harder than a lookup',
+    lastCall.body.generation_config?.thinking_level === 'low',
+    lastCall.body.generation_config?.thinking_level);
+  check('the recap asks for a diagram it can draw',
+    lastCall.body.response_format?.schema?.properties?.diagram?.properties?.nodes?.type === 'array');
+
+  const diagram = short.result.diagram;
+  check('the diagram survives with its nodes', diagram?.nodes.length === 3, `${diagram?.nodes.length} nodes`);
+  check('an edge naming no node is dropped',
+    diagram.edges.length === 2 && !diagram.edges.some((e) => e.to === 'ghost'),
+    `${diagram.edges.length} edges`);
+
+  calledBefore = calls.length;
+  const repeat = await (await recapPost({ toPage: 3 })).json();
+  check('the same range is not paid for twice',
+    repeat.cached === true && calls.length === calledBefore);
+
+  // The selection comes from the browser's text layer, whose whitespace differs from
+  // the server's — the match has to survive that.
+  const cut = await (await recapPost({ toPage: 3, cutText: 'Section  3.3\nmarker 3333' })).json();
+  check('a selected line is matched despite the whitespace', cut.cut_applied === 1);
+  check('the cut truncates the last page',
+    lastCall.body.input.includes('marker 3333') && !lastCall.body.input.includes('marker 3434'));
+
+  const unmatched = await (await recapPost({ toPage: 3, cutText: 'not a line in this document' })).json();
+  check('a line that cannot be found still gives a recap', unmatched.cut_applied === 0);
+
+  calledBefore = calls.length;
+  const long = await (await recapPost({ fromPage: 1, toPage: 8 })).json();
+  check('a long range is summarised in passes', long.chunks > 1, `${long.chunks} chunks`);
+  check('each pass is a call, plus one to combine them',
+    calls.length - calledBefore === long.chunks + 1, `${calls.length - calledBefore} calls`);
+  check('the last call combines notes rather than pages',
+    lastCall.body.input.includes('Notes:'));
+
+  // Chunks are packed from page 1 of the document, so reading further reuses them.
+  calledBefore = calls.length;
+  const extended = await (await recapPost({ fromPage: 1, toPage: 9 })).json();
+  check('extending a recap reuses the chunks already paid for',
+    calls.length - calledBefore < extended.chunks + 1,
+    `${calls.length - calledBefore} calls for ${extended.chunks} chunks`);
+
+  check('a recap of an unknown document 404s',
+    (await recapPost({ docId: 'nope', toPage: 2 })).status === 404);
+
+  const savedRecaps = await (await fetch(`${BASE}/api/documents/${doc.id}/recaps`)).json();
+  check('recaps are saved per document', savedRecaps.length >= 3, `${savedRecaps.length} saved`);
+  check('asking for one range twice does not pile up rows',
+    savedRecaps.filter((r) => r.to_page === 3 && !r.cut_text).length === 1);
+  check('deleting an unknown recap 404s',
+    (await fetch(`${BASE}/api/recaps/999999`, { method: 'DELETE' })).status === 404);
+
+  /* ---- recap in the browser ---- */
+  await page.locator('#recap-btn').click();
+  await page.waitForSelector('#recap-range:not([hidden])');
+  check('the recap range ends at the page you are on',
+    (await page.locator('#recap-to').inputValue()) === (await page.locator('#page-input').inputValue()));
+  check('the recap range starts at the beginning',
+    (await page.locator('#recap-from').inputValue()) === '1');
+
+  await page.locator('#recap-go').click();
+  await page.waitForSelector('.panel-headline', { timeout: 20000 });
+  check('the panel shows where you are',
+    (await page.locator('#panel-body').textContent()).includes('Where you are'));
+
+  check('the recap draws a diagram', (await page.locator('.recap-diagram svg').count()) === 1);
+  check('every node is drawn', (await page.locator('.recap-diagram .dg-node').count()) === 3);
+  check('rough.js sketched it rather than drawing plain boxes',
+    (await page.locator('.recap-diagram svg path').count()) > 5,
+    `${await page.locator('.recap-diagram svg path').count()} paths`);
+  check('the dropped edge is not drawn',
+    !(await page.locator('.recap-diagram .dg-edge').allTextContents()).includes('dangling'));
+
+  // rough.js writes colours into its paths, so a theme change has to redraw them.
+  const nodeFill = () => page.evaluate(() => {
+    const p = [...document.querySelectorAll('.recap-diagram svg path')]
+      .find((n) => (n.getAttribute('fill') || 'none') !== 'none');
+    return p?.getAttribute('fill') ?? null;
+  });
+  const lightFill = await nodeFill();
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.waitForTimeout(300);
+  const darkFill = await nodeFill();
+  check('the sketch is redrawn for the other theme',
+    lightFill && darkFill && lightFill !== darkFill, `${lightFill} -> ${darkFill}`);
+  await page.emulateMedia({ colorScheme: 'light' });
+
+  const scrolledFrom = await page.evaluate(() => document.getElementById('viewer-container').scrollTop);
+  await page.locator('.recap-diagram .dg-node-link').first().click();
+  await page.waitForTimeout(800);
+  check('a node carrying a page number scrolls the viewer',
+    (await page.evaluate(() => document.getElementById('viewer-container').scrollTop)) !== scrolledFrom);
+
+  await page.locator('#recap-btn').click();
+  await page.waitForSelector('#recap-range:not([hidden])');
+  await page.locator('#recaps-open').click();
+  await page.waitForSelector('#recaps:not([hidden])');
+  check('saved recaps are listed', (await page.locator('#recaps-list .history-item').count()) >= 1);
+  check('the recaps drawer displaces the panel', !(await page.locator('#panel').isVisible()));
+
+  await page.locator('#history-btn').click();
+  await page.waitForSelector('#history:not([hidden])');
+  check('the history drawer displaces the recaps drawer',
+    !(await page.locator('#recaps').isVisible()));
+  await page.locator('#history-close').click();
 
   /* zoom + jump */
   const wBefore = await page.locator('.page').first().evaluate((e) => e.getBoundingClientRect().width);

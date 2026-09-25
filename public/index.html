@@ -65,6 +65,14 @@
       </button>
     </div>
 
+    <button id="recap-btn" class="icon-btn" title="Catch me up" aria-label="Catch me up on what I have read">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M3.5 12a8.5 8.5 0 1 0 2.9-6.4L3 8"/>
+        <path d="M3 3.5V8h4.5"/>
+        <path d="M12 8v4.2l2.8 1.8"/>
+      </svg>
+    </button>
+
     <button id="history-btn" class="icon-btn" title="Lookups in this document" aria-label="Lookups in this document">
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <path d="M9 6h11M9 12h11M9 18h11"/>
@@ -81,11 +89,35 @@
     <div id="viewer" class="viewer"></div>
   </div>
 
-  <!-- Floating button that follows a text selection -->
-  <button id="explain-btn" class="explain-btn" hidden>
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.8H20l-4.9 3.6 1.9 5.8-5-3.6-5 3.6 1.9-5.8L4 8.8h6.1z"/></svg>
-    What does this mean?
-  </button>
+  <!-- Range picker, dropped from the toolbar button -->
+  <div id="recap-range" class="recap-range" hidden>
+    <div class="recap-range-row">
+      <label>From page <input id="recap-from" type="number" min="1" value="1"></label>
+      <label>To page <input id="recap-to" type="number" min="1"></label>
+    </div>
+    <p id="recap-cut" class="recap-cut" hidden>
+      up to “<span id="recap-cut-text"></span>”
+      <button id="recap-cut-clear" class="text-btn">use the whole page</button>
+    </p>
+    <div class="recap-range-actions">
+      <button id="recaps-open" class="text-btn">Saved recaps</button>
+      <button id="recap-go" class="recap-go">Catch me up</button>
+    </div>
+  </div>
+
+  <!-- Floating actions that follow a text selection -->
+  <div id="sel-actions" class="sel-actions" hidden>
+    <button id="explain-btn" class="explain-btn" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.8H20l-4.9 3.6 1.9 5.8-5-3.6-5 3.6 1.9-5.8L4 8.8h6.1z"/></svg>
+      What does this mean?
+    </button>
+    <button id="recap-here-btn" class="explain-btn recap-here" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M3.5 12a8.5 8.5 0 1 0 2.9-6.4L3 8"/><path d="M3 3.5V8h4.5"/>
+      </svg>
+      Recap up to here
+    </button>
+  </div>
 
   <!-- Result panel -->
   <aside id="panel" class="panel" hidden>
@@ -111,6 +143,21 @@
     </div>
     <ul id="history-list" class="history-list"></ul>
     <p id="history-empty" class="empty" hidden>Nothing looked up yet.</p>
+  </aside>
+
+  <!-- Saved recaps drawer -->
+  <aside id="recaps" class="recaps" hidden>
+    <div class="panel-head">
+      <strong>Recaps of this document</strong>
+      <span class="head-actions">
+        <button id="recaps-clear" class="text-btn" hidden>Clear all</button>
+        <button id="recaps-close" class="icon-btn" title="Close" aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </span>
+    </div>
+    <ul id="recaps-list" class="history-list"></ul>
+    <p id="recaps-empty" class="empty" hidden>No recaps yet — use “Catch me up”.</p>
   </aside>
 </div>
 

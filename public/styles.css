@@ -264,11 +264,16 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .page.placeholder::after { content: ""; width: 22px; height: 22px; border: 2px solid var(--border); border-top-color: var(--text-dim); border-radius: 50%; animation: spin 0.7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ---------------------------- explain button ---------------------------- */
+/* ---------------------------- selection actions ---------------------------- */
 
-.explain-btn {
+/* The wrapper is what gets positioned; the buttons inside keep their own `hidden`. */
+.sel-actions {
   position: fixed;
   z-index: 40;
+  display: flex; align-items: center; gap: 0.35rem;
+}
+
+.explain-btn {
   display: flex; align-items: center; gap: 0.4rem;
   padding: 0.42rem 0.75rem;
   border: none; border-radius: 999px;
@@ -282,9 +287,63 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .explain-btn:hover { filter: brightness(1.08); }
 @keyframes pop { from { opacity: 0; transform: scale(0.92); } to { opacity: 1; transform: scale(1); } }
 
+/* The second action is the quieter of the two — a recap is the bigger commitment. */
+.recap-here {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.recap-here svg { fill: none; stroke: currentColor; stroke-width: 2; }
+
+/* ------------------------------ recap range ------------------------------ */
+
+.recap-range {
+  position: fixed;
+  top: calc(var(--toolbar-h) + 8px);
+  right: 16px;
+  z-index: 55;
+  width: min(300px, calc(100vw - 32px));
+  display: flex; flex-direction: column; gap: 0.6rem;
+  padding: 0.8rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  animation: slide-up 0.16s ease;
+}
+.recap-range-row { display: flex; gap: 0.6rem; }
+.recap-range-row label {
+  flex: 1;
+  display: flex; flex-direction: column; gap: 0.25rem;
+  font-size: 0.72rem; color: var(--text-dim);
+}
+.recap-range-row input {
+  width: 100%;
+  padding: 0.3rem 0.4rem;
+  font: inherit; font-size: 0.85rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.recap-range-actions { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.recap-go {
+  padding: 0.4rem 0.8rem;
+  border: none; border-radius: 8px;
+  background: var(--accent); color: #fff;
+  font-size: 0.82rem; font-weight: 550;
+}
+.recap-go:hover { filter: brightness(1.08); }
+.recap-go:disabled { opacity: 0.55; }
+.recap-cut {
+  margin: 0;
+  font-size: 0.75rem; font-style: italic; color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 /* -------------------------------- panels -------------------------------- */
 
-.panel, .history {
+.panel, .history, .recaps {
   position: fixed; right: 16px; bottom: 16px;
   width: min(400px, calc(100vw - 32px));
   max-height: min(65vh, 620px);
@@ -354,6 +413,33 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .panel-error code { font-family: var(--mono); font-size: 0.78rem; background: var(--surface-2); padding: 0.1rem 0.3rem; border-radius: 4px; }
 .cached-note { font-size: 0.7rem; color: var(--text-dim); margin-top: 0.7rem; }
 
+/* -------------------------------- recap ---------------------------------- */
+
+.recap-points { list-style: disc; margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: 0.35rem; }
+.recap-points li { font-size: 0.87rem; }
+
+/* A page reference sits inline in the text, so it reads as part of the sentence. */
+.page-ref {
+  border: none; background: transparent;
+  padding: 0 0.1rem;
+  font: inherit; font-size: 0.78em;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.page-ref:hover { filter: brightness(1.15); }
+
+.recap-diagram svg { display: block; width: 100%; height: auto; }
+/* The global rule up top strokes every svg; labels are text and must not be outlined. */
+.recap-diagram svg text { stroke: none; stroke-width: 0; }
+.recap-diagram .dg-label { font-size: 13px; font-weight: 550; fill: var(--text); }
+.recap-diagram .dg-page  { font-size: 10px; fill: var(--text-dim); }
+.recap-diagram .dg-edge  { font-size: 11px; fill: var(--text-dim); }
+.recap-diagram .dg-node-link { cursor: pointer; }
+.recap-diagram .dg-node-link:hover .dg-label { fill: var(--accent); }
+.recap-diagram .dg-node-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.dg-caption { margin: 0.4rem 0 0; font-size: 0.75rem; color: var(--text-dim); font-style: italic; }
+
 .head-actions { display: flex; align-items: center; gap: 0.25rem; }
 
 .text-btn {
@@ -390,5 +476,6 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 @media (max-width: 640px) {
   .toolbar { gap: 0.25rem; padding: 0 0.35rem; }
   .doc-title { display: none; }
-  .panel, .history { right: 8px; left: 8px; bottom: 8px; width: auto; }
+  .panel, .history, .recaps { right: 8px; left: 8px; bottom: 8px; width: auto; }
+  .recap-range { right: 8px; left: 8px; width: auto; }
 }

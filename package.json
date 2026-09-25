@@ -15,7 +15,8 @@
   "dependencies": {
     "express": "^5.2.1",
     "multer": "^2.4.0",
-    "pdfjs-dist": "^6.3.289"
+    "pdfjs-dist": "^6.3.289",
+    "roughjs": "^4.6.6"
   },
   "devDependencies": {
     "playwright-core": "^1.63.0"

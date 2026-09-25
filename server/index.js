@@ -5,9 +5,12 @@ import crypto from 'node:crypto';
 import express from 'express';
 import multer from 'multer';
 
-import { PORT, PDF_DIR, PUBLIC_DIR, ROOT, GEMINI_API_KEY, GEMINI_MODEL, IMAGE_USER_AGENT, EXTRA_IMAGE_HOSTS } from './config.js';
-import { documents, progress, lookups } from './db.js';
-import { explain, ExplainError } from './explain.js';
+import { PORT, PDF_DIR, PUBLIC_DIR, ROOT, GEMINI_API_KEY, GEMINI_MODEL, IMAGE_USER_AGENT, EXTRA_IMAGE_HOSTS, RECAP_MAX_PAGES } from './config.js';
+import { documents, progress, lookups, recaps } from './db.js';
+import { explain } from './explain.js';
+import { ExplainError } from './gemini.js';
+import { generateRecap } from './recap.js';
+import { cutKey } from './pagetext.js';
 import { inspectPdf } from './pdfinfo.js';
 import { findImage, ALLOWED_IMAGE_HOSTS } from './images.js';
 
@@ -168,7 +171,6 @@ app.post('/api/explain', asyncRoute(async (req, res) => {
   if (typeof selection !== 'string' || !selection.trim()) {
     return res.status(400).json({ error: 'Nothing was selected.' });
   }
-  console.log('selection', selection);
   const result = await explain({ selection, context: typeof context === 'string' ? context : '' });
 
   const pageNo = Number.parseInt(page, 10) || 1;
@@ -180,6 +182,70 @@ app.post('/api/explain', asyncRoute(async (req, res) => {
 
   res.json(result);
 }));
+
+/* ---------------------------------- recap --------------------------------- */
+
+// One recap per document at a time: there is a single panel, so an older result would
+// only be thrown away. Starting a new one stops the old one paying for calls.
+const runningRecaps = new Map();
+
+app.post('/api/recap', asyncRoute(async (req, res) => {
+  const { docId, fromPage, toPage, cutText, refresh } = req.body ?? {};
+  const doc = documents.get(docId);
+  if (!doc) return res.status(404).json({ error: 'Document not found.' });
+
+  const last = doc.pages > 0 ? doc.pages : Number.MAX_SAFE_INTEGER;
+  const to = Math.min(Math.max(Number.parseInt(toPage, 10) || 1, 1), last);
+  const from = Math.min(Math.max(Number.parseInt(fromPage, 10) || 1, 1), to);
+
+  if (to - from + 1 > RECAP_MAX_PAGES) {
+    return res.status(400).json({
+      error: `A recap covers at most ${RECAP_MAX_PAGES} pages at a time.`,
+      hint: 'Set a "from page" to narrow the range.',
+    });
+  }
+
+  const cut = typeof cutText === 'string' ? cutText.trim().slice(0, 400) : '';
+  const hash = cutKey(cut);
+
+  if (!refresh) {
+    const saved = recaps.find(doc.id, from, to, hash);
+    if (saved) return res.json({ ...saved, cached: true });
+  }
+
+  runningRecaps.get(doc.id)?.abort(new Error('superseded'));
+  const controller = new AbortController();
+  runningRecaps.set(doc.id, controller);
+
+  try {
+    const out = await generateRecap({
+      doc, fromPage: from, toPage: to, cutText: cut, signal: controller.signal,
+    });
+    const row = recaps.upsert({
+      docId: doc.id, fromPage: from, toPage: to,
+      cutText: cut, cutHash: hash, cutApplied: out.cutApplied,
+      chars: out.chars, chunks: out.chunks, result: out.result,
+    });
+    res.json({ ...row, cached: false });
+  } finally {
+    if (runningRecaps.get(doc.id) === controller) runningRecaps.delete(doc.id);
+  }
+}));
+
+app.get('/api/documents/:id/recaps', (req, res) => {
+  res.json(recaps.listByDoc(req.params.id));
+});
+
+app.delete('/api/documents/:id/recaps', (req, res) => {
+  res.json({ removed: recaps.removeAllForDoc(req.params.id) });
+});
+
+app.delete('/api/recaps/:id', (req, res) => {
+  const id = Number.parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Not a recap id.' });
+  if (!recaps.remove(id)) return res.status(404).json({ error: 'That recap is already gone.' });
+  res.json({ ok: true });
+});
 
 /**
  * Pictures are fetched separately from the explanation so a slow encyclopaedia never
@@ -229,6 +295,7 @@ app.get('/api/image/file', asyncRoute(async (req, res) => {
 /* -------------------------------- static --------------------------------- */
 
 app.use('/vendor/pdfjs', express.static(path.join(ROOT, 'node_modules/pdfjs-dist')));
+app.use('/vendor/roughjs', express.static(path.join(ROOT, 'node_modules/roughjs')));
 app.use(express.static(PUBLIC_DIR));
 
 /* ------------------------------ error handling ---------------------------- */

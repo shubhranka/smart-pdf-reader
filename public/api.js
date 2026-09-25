@@ -64,6 +64,21 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),
     }),
+
+  // A long recap can run for a minute, so the caller keeps a signal to stop waiting on it.
+  recap: (payload, signal) =>
+    request('/api/recap', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal,
+    }),
+
+  getRecaps: (docId) => request(`/api/documents/${docId}/recaps`),
+
+  deleteRecap: (id) => request(`/api/recaps/${id}`, { method: 'DELETE' }),
+
+  clearRecaps: (docId) => request(`/api/documents/${docId}/recaps`, { method: 'DELETE' }),
 };
 
 export const fileUrl = (id) => `/api/documents/${id}/file`;

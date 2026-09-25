@@ -1,5 +1,6 @@
 import * as pdfjsLib from '/vendor/pdfjs/build/pdf.mjs';
 import { api, fileUrl, getDocument } from './api.js';
+import { renderDiagram } from './diagram.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/build/pdf.worker.mjs';
 
@@ -34,6 +35,22 @@ const el = {
   back: document.getElementById('back-btn'),
   saveBadge: document.getElementById('save-badge'),
   explainBtn: document.getElementById('explain-btn'),
+  selActions: document.getElementById('sel-actions'),
+  recapHereBtn: document.getElementById('recap-here-btn'),
+  recapBtn: document.getElementById('recap-btn'),
+  recapRange: document.getElementById('recap-range'),
+  recapFrom: document.getElementById('recap-from'),
+  recapTo: document.getElementById('recap-to'),
+  recapCut: document.getElementById('recap-cut'),
+  recapCutText: document.getElementById('recap-cut-text'),
+  recapCutClear: document.getElementById('recap-cut-clear'),
+  recapGo: document.getElementById('recap-go'),
+  recaps: document.getElementById('recaps'),
+  recapsList: document.getElementById('recaps-list'),
+  recapsEmpty: document.getElementById('recaps-empty'),
+  recapsOpen: document.getElementById('recaps-open'),
+  recapsClose: document.getElementById('recaps-close'),
+  recapsClear: document.getElementById('recaps-clear'),
   panel: document.getElementById('panel'),
   panelKind: document.getElementById('panel-kind'),
   panelBody: document.getElementById('panel-body'),
@@ -556,15 +573,23 @@ function readSelection() {
   return { text, page: Number(pageEl.dataset.page), rect };
 }
 
+/**
+ * The two selection actions travel together in a wrapper, which is what gets
+ * positioned. Each button still carries its own `hidden`, so anything checking for a
+ * visible button — including the tests — sees the truth on the button itself.
+ */
 function showExplainButton(sel) {
-  const btn = el.explainBtn;
+  const group = el.selActions;
   const bounds = el.container.getBoundingClientRect();
 
   // A selection scrolled out of view gets no button — it would float over unrelated text.
   if (sel.rect.bottom < bounds.top || sel.rect.top > bounds.bottom) return hideExplainButton();
 
-  btn.hidden = false;
-  const { width, height } = btn.getBoundingClientRect();
+  group.hidden = false;
+  el.explainBtn.hidden = false;
+  el.recapHereBtn.hidden = false;
+
+  const { width, height } = group.getBoundingClientRect();
   const gap = 8;
   const left = sel.rect.left + sel.rect.width / 2 - width / 2;
   let top = sel.rect.top - height - gap;
@@ -572,12 +597,14 @@ function showExplainButton(sel) {
   // Flip below the selection when it would otherwise sit under the toolbar.
   if (top < bounds.top + gap) top = sel.rect.bottom + gap;
 
-  btn.style.left = `${clamp(left, 8, window.innerWidth - width - 8)}px`;
-  btn.style.top = `${clamp(top, bounds.top + gap, window.innerHeight - height - 8)}px`;
+  group.style.left = `${clamp(left, 8, window.innerWidth - width - 8)}px`;
+  group.style.top = `${clamp(top, bounds.top + gap, window.innerHeight - height - 8)}px`;
 }
 
 function hideExplainButton() {
+  el.selActions.hidden = true;
   el.explainBtn.hidden = true;
+  el.recapHereBtn.hidden = true;
   state && (state.pendingSelection = null);
 }
 
@@ -586,12 +613,22 @@ function hideExplainButton() {
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+/**
+ * The result panel and the two drawers share one corner, so exactly one is ever open.
+ * With three of them, pairwise "hide the other" rules stop being tractable — this is
+ * the one place that decides.
+ */
+function showDrawer(which /* 'panel' | 'history' | 'recaps' | null */) {
+  el.panel.hidden = which !== 'panel';
+  el.history.hidden = which !== 'history';
+  el.recaps.hidden = which !== 'recaps';
+}
+
 function openPanel(kindLabel, html) {
   if (state) state.panelToken = (state.panelToken ?? 0) + 1;
   el.panelKind.textContent = kindLabel;
   el.panelBody.innerHTML = html;
-  el.panel.hidden = false;
-  el.history.hidden = true; // they share the same corner
+  showDrawer('panel');
 }
 
 /**
@@ -747,6 +784,196 @@ function renderHistory() {
   }
 }
 
+/* --------------------------------- recap ---------------------------------- */
+
+function openRecapRange() {
+  if (!state) return;
+  const here = locate().page;
+  el.recapFrom.value = el.recapFrom.value || '1';
+  el.recapTo.value = String(here);
+  el.recapRange.hidden = false;
+  el.recapFrom.focus();
+  el.recapFrom.select();
+}
+
+function setRecapCut(sel) {
+  if (!state || !sel) return;
+  state.recapCut = { page: sel.page, text: sel.text };
+  el.recapCutText.textContent = sel.text.length > 50 ? `${sel.text.slice(0, 50)}…` : sel.text;
+  el.recapCut.hidden = false;
+}
+
+function clearRecapCut() {
+  if (state) state.recapCut = null;
+  el.recapCut.hidden = true;
+}
+
+/** A recap covers whole pages unless the cut sits on the very last one. */
+function cutForRange(toPage) {
+  return state.recapCut?.page === toPage ? state.recapCut.text : '';
+}
+
+function renderRecap(row) {
+  const r = row.result ?? {};
+  const pageRef = (p) => (p ? ` <button class="page-ref" data-page="${p}">p.${p}</button>` : '');
+
+  const narrative = (r.narrative ?? [])
+    .map((para) => `<p>${escapeHtml(para)}</p>`).join('');
+
+  const points = (r.keyPoints ?? [])
+    .map((k) => `<li>${escapeHtml(k.point)}${pageRef(k.page)}</li>`).join('');
+
+  const terms = (r.keyTerms ?? [])
+    .map((t) => `<li><span class="detail-label">${escapeHtml(t.term)}</span><span>${escapeHtml(t.meaning)}${pageRef(t.page)}</span></li>`)
+    .join('');
+
+  const threads = (r.openThreads ?? [])
+    .map((t) => `<li>${escapeHtml(t)}</li>`).join('');
+
+  const scope = row.cut_applied
+    ? `pages ${row.from_page}–${row.to_page}, up to the line you picked`
+    : `pages ${row.from_page}–${row.to_page}`;
+
+  openPanel('recap', `
+    <h3 class="panel-headline">${escapeHtml(r.title || 'Recap')}</h3>
+    <p class="panel-selection">${escapeHtml(scope)}</p>
+    ${r.whereYouAre ? `<div class="panel-section">
+      <div class="panel-label">Where you are</div><p>${escapeHtml(r.whereYouAre)}</p></div>` : ''}
+    ${r.diagram ? '<div class="panel-section"><div class="panel-label">How it fits together</div><div class="recap-diagram"></div></div>' : ''}
+    ${narrative ? `<div class="panel-section">
+      <div class="panel-label">What you've covered</div>${narrative}</div>` : ''}
+    ${points ? `<div class="panel-section">
+      <div class="panel-label">Key points</div><ul class="recap-points">${points}</ul></div>` : ''}
+    ${terms ? `<div class="panel-section">
+      <div class="panel-label">Terms introduced</div><ul class="detail-list">${terms}</ul></div>` : ''}
+    ${threads ? `<div class="panel-section">
+      <div class="panel-label">Left hanging</div><ul class="recap-points">${threads}</ul></div>` : ''}
+    <p class="cached-note">
+      ${row.chunks > 1 ? `Built from ${row.chunks} passes over the text. ` : ''}
+      ${row.cached ? 'From an earlier recap of the same range.' : ''}
+    </p>
+  `);
+
+  for (const ref of el.panelBody.querySelectorAll('.page-ref')) {
+    ref.addEventListener('click', () => scrollToPage(Number(ref.dataset.page), 0, 'smooth'));
+  }
+
+  const slot = el.panelBody.querySelector('.recap-diagram');
+  if (slot && r.diagram) {
+    renderDiagram(r.diagram, slot, (page) => scrollToPage(page, 0, 'smooth'));
+  }
+}
+
+async function runRecap() {
+  if (!state || state.recapRun) return;
+
+  const total = state.slots.length;
+  const from = clamp(Number.parseInt(el.recapFrom.value, 10) || 1, 1, total);
+  const to = clamp(Number.parseInt(el.recapTo.value, 10) || locate().page, from, total);
+  const cutText = cutForRange(to);
+
+  el.recapRange.hidden = true;
+  const controller = new AbortController();
+  state.recapRun = { controller };
+  el.recapGo.disabled = true;
+
+  const long = to - from > 25;
+  openPanel('recap', `<div class="panel-loading">Reading pages ${from}–${to}…</div>
+    ${long ? `<p class="hint">A long stretch takes a minute.
+      <button id="recap-background" class="text-btn">Run in the background</button></p>` : ''}`);
+
+  const token = state.panelToken;
+  el.panelBody.querySelector('#recap-background')?.addEventListener('click', () => {
+    controller.abort();
+    openPanel('recap', `<div class="panel-loading">Still working — it will appear in
+      <strong>Saved recaps</strong> when it is done.</div>`);
+    setTimeout(() => loadRecaps(), 4000);
+  });
+
+  try {
+    const row = await api.recap({ docId: state.docId, fromPage: from, toPage: to, cutText }, controller.signal);
+    if (token !== state.panelToken) return; // the reader moved on
+    renderRecap(row);
+    loadRecaps();
+  } catch (err) {
+    // Aborting is the reader's own choice, not a failure worth a red panel.
+    if (err.name === 'AbortError') return;
+    if (token !== state.panelToken) return;
+    openPanel('error', `<div class="panel-error">${escapeHtml(err.message)}
+      ${err.hint ? `<span class="hint">${escapeHtml(err.hint)}</span>` : ''}</div>`);
+  } finally {
+    if (state) state.recapRun = null;
+    el.recapGo.disabled = false;
+  }
+}
+
+async function loadRecaps() {
+  if (!state) return;
+  try {
+    state.recaps = await api.getRecaps(state.docId);
+  } catch {
+    state.recaps = [];
+  }
+  renderRecaps();
+}
+
+function renderRecaps() {
+  el.recapsList.replaceChildren();
+  el.recapsEmpty.hidden = state.recaps.length > 0;
+  el.recapsClear.hidden = state.recaps.length === 0;
+
+  for (const row of state.recaps) {
+    const li = document.createElement('li');
+    li.className = 'history-item';
+    li.innerHTML = `
+      <span class="history-text">
+        <span class="history-term"></span>
+        <span class="history-sub"></span>
+      </span>
+      <button class="delete-btn" title="Delete this recap" aria-label="Delete this recap">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14"/></svg>
+      </button>`;
+    li.querySelector('.history-term').textContent = row.result?.title || `Pages ${row.from_page}–${row.to_page}`;
+    li.querySelector('.history-sub').textContent =
+      `p.${row.from_page}–${row.to_page}${row.cut_applied ? ' · to a line' : ''}`;
+
+    li.addEventListener('click', (e) => {
+      if (e.target.closest('.delete-btn')) return;
+      revealRecap(row);
+    });
+
+    li.querySelector('.delete-btn').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      state.recaps = state.recaps.filter((r) => r.id !== row.id);
+      renderRecaps();
+      try {
+        await api.deleteRecap(row.id);
+      } catch {
+        loadRecaps();
+      }
+    });
+
+    el.recapsList.append(li);
+  }
+}
+
+/** Reopen a saved recap, and land on the line it stopped at when there was one. */
+async function revealRecap(row) {
+  renderRecap({ ...row, cached: true });
+  if (!row.cut_applied || !row.cut_text) return;
+
+  const slot = state.slots[row.to_page - 1];
+  if (!slot) return;
+
+  state.highlight = { page: row.to_page, text: row.cut_text };
+  clearHighlightMarks();
+  await renderPage(slot).catch(() => {});
+  if (!state || state.highlight?.text !== row.cut_text) return;
+
+  if (drawHighlight(slot)) scrollToHighlight(slot, 'smooth');
+  else scrollToPage(row.to_page, 0, 'smooth');
+}
+
 /* ------------------------------ open / close ------------------------------ */
 
 /** Persist the position even while the page is unloading, where fetch is unreliable. */
@@ -789,6 +1016,9 @@ export async function openDocument(docId) {
     panelToken: 0,
     highlight: null,
     lookups: [],
+    recaps: [],
+    recapCut: null,
+    recapRun: null,
   };
 
   sizeAllSlots();
@@ -801,6 +1031,7 @@ export async function openDocument(docId) {
   updateVisiblePages();
   syncPageIndicator();
   loadHistory();
+  loadRecaps();
 }
 
 export function close() {
@@ -808,6 +1039,8 @@ export function close() {
     clearTimeout(state.saveTimer);
     clearTimeout(state.badgeTimer);
     clearTimeout(state.zoomCommitTimer);
+    // Nothing to gain from a recap for a document nobody is looking at any more.
+    state.recapRun?.controller.abort();
     // Flush the position instead of losing the last few seconds of reading.
     const { page, offsetPct } = locate();
     flushProgress(state.docId, page, offsetPct);
@@ -816,8 +1049,8 @@ export function close() {
   }
   el.viewer.replaceChildren();
   el.reader.hidden = true;
-  el.panel.hidden = true;
-  el.history.hidden = true;
+  el.recapRange.hidden = true;
+  showDrawer(null);
   hideExplainButton();
   document.title = 'Smart PDF Reader';
 }
@@ -906,10 +1139,22 @@ export function initReader(exitHandler) {
     if (!e.target.closest('.explain-btn')) hideExplainButton();
   });
 
-  // The button must not steal the selection before we read it.
+  // The buttons must not steal the selection before we read it.
   el.explainBtn.addEventListener('mousedown', (e) => e.preventDefault());
   el.explainBtn.addEventListener('click', () => {
     if (state?.pendingSelection) runExplain(state.pendingSelection);
+  });
+
+  el.recapHereBtn.addEventListener('mousedown', (e) => e.preventDefault());
+  el.recapHereBtn.addEventListener('click', () => {
+    const sel = state?.pendingSelection;
+    if (!sel) return;
+    setRecapCut(sel);
+    hideExplainButton();
+    el.recapFrom.value = '1';
+    el.recapTo.value = String(sel.page);
+    el.recapRange.hidden = false;
+    showDrawer(null);
   });
 
   el.panelClose.addEventListener('click', () => {
@@ -930,14 +1175,61 @@ export function initReader(exitHandler) {
     }
   });
   el.historyBtn.addEventListener('click', () => {
-    el.history.hidden = !el.history.hidden;
-    if (!el.history.hidden) { el.panel.hidden = true; loadHistory(); }
+    const opening = el.history.hidden;
+    showDrawer(opening ? 'history' : null);
+    if (opening) loadHistory();
+  });
+
+  /* --- recap --- */
+
+  el.recapBtn.addEventListener('click', () => {
+    if (!state) return;
+    if (el.recapRange.hidden) {
+      showDrawer(null);
+      openRecapRange();
+    } else {
+      el.recapRange.hidden = true;
+    }
+  });
+
+  el.recapGo.addEventListener('click', runRecap);
+  for (const input of [el.recapFrom, el.recapTo]) {
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') runRecap(); });
+  }
+  el.recapCutClear.addEventListener('click', clearRecapCut);
+
+  el.recapsOpen.addEventListener('click', () => {
+    el.recapRange.hidden = true;
+    showDrawer('recaps');
+    loadRecaps();
+  });
+  el.recapsClose.addEventListener('click', () => { el.recaps.hidden = true; });
+  el.recapsClear.addEventListener('click', async () => {
+    if (!state?.recaps.length) return;
+    const count = state.recaps.length;
+    if (!confirm(`Delete all ${count} recap${count === 1 ? '' : 's'} of this document?`)) return;
+    state.recaps = [];
+    renderRecaps();
+    try {
+      await api.clearRecaps(state.docId);
+    } catch {
+      loadRecaps();
+    }
+  });
+
+  // Clicking away closes the range picker, the way a menu would.
+  document.addEventListener('mousedown', (e) => {
+    if (el.recapRange.hidden) return;
+    if (e.target.closest('#recap-range') || e.target.closest('#recap-btn')) return;
+    el.recapRange.hidden = true;
   });
 
   document.addEventListener('keydown', (e) => {
     if (el.reader.hidden) return;
     if (e.key === 'Escape') {
+      if (!el.recapRange.hidden) return void (el.recapRange.hidden = true);
       if (!el.panel.hidden) { el.panel.hidden = true; clearHighlight(); return; }
+      if (!el.recaps.hidden) return void (el.recaps.hidden = true);
       if (!el.history.hidden) return void (el.history.hidden = true);
       onExit();
     }
