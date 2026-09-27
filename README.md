@@ -19,7 +19,8 @@
 
 Reading something hard is easier when you don't have to leave the page. Highlight a word you
 don't know and get its meaning, plus what it means *in this book*. Come back after a week away and
-ask for a recap of everything so far. Close the tab mid-chapter and it opens right where you were.
+ask for a recap of everything so far. Stuck on a dense section? Turn it into a mind map. Close
+the tab mid-chapter and it opens right where you were.
 
 Everything runs on your own machine. Your PDFs and reading history never go anywhere except the
 AI model you choose, and only the text you ask about.
@@ -53,6 +54,15 @@ You get:
 
 Looking up the same thing twice is instant and free, because answers are cached.
 
+### 🕸️ Map out a passage
+
+Select a paragraph or a whole section and press **Mind map**. You get a hand-drawn map of it:
+the topic in the middle, its main ideas on either side, and the details under each one. It's a
+quick way to see how a dense passage is put together before you read it closely.
+
+The button shows up only when you select a dozen words or more, because a word or a short
+phrase has nothing to map. Mapping the same passage again is instant, because maps are cached too.
+
 ### 🧠 Catch me up
 
 Been away for a while? Press the clock button and choose a range: from the start up to where
@@ -80,6 +90,19 @@ highlights them. Delete them one at a time or clear them all.
 <p align="center">
   <img src="docs/screenshots/history.png" alt="The 'Lookups in this document' drawer listing oxidative phosphorylation, proton-motive force and cristae with their pages" width="720">
 </p>
+
+### 🎯 A tracker that keeps your pace
+
+Press the tracker button (or `t`) and click any word. A soft highlight moves along the line
+one word at a time, hops down to the next line with a little bounce, and scrolls the page
+for you so the line you're on stays in the same spot on screen.
+
+- **Set your speed** from 100 to 800 words per minute with the slider or `[` `]`. The speed is remembered.
+- **It reads like a person.** It rests a little longer on long words and at the end of a sentence.
+- **Scroll yourself and it pauses.** Press `Space` and it glides back to where it was.
+- **It keeps up with zoom**, pinch included, and moves on to the next page by itself.
+
+If your system is set to reduce motion, the bounce is turned off.
 
 ### 🌙 Easy on the eyes at night
 
@@ -148,23 +171,27 @@ size settings.
 
 | Do this | To |
 |---|---|
-| **Highlight text** | Get an explanation, or a recap up to that line |
+| **Highlight text** | Get an explanation, a mind map of the passage, or a recap up to that line |
 | **Scroll** | Your page saves itself |
 | 🕘 **Clock button** | *Catch me up*: choose a range, get a recap and a diagram |
 | ☰ **List button** | See past lookups, jump to them, delete them |
 | 🌙 **Moon button** | Dark pages |
+| 🎯 **Tracker button** or `t` | Turn the reading tracker on, then click a word to start |
+| `Space` | Play or pause the tracker (while it's on) |
+| `[` `]` | Tracker slower or faster |
+| `f` | Full screen |
 | `←` `→` or type a page number | Jump around |
 | **Pinch** on the trackpad | Zoom the PDF |
 | `Cmd`/`Ctrl` + `+` `-` `0` | Zoom in, zoom out, back to 100% |
-| `Esc` | Close a panel, then leave the book |
+| `Esc` | Close a panel, turn off the tracker, then leave the book |
 
 ## 🔒 Where your stuff lives
 
 - **PDFs** are stored in `pdfs/`.
 - **Reading positions, lookups and recaps** are stored in a SQLite file in `data/`.
-- **The AI model** only receives the text you highlight, the page around it, or the range you
-  ask to recap. Gemini calls send `store: false`. OpenRouter is told to use only upstream providers
-  that don't keep prompts.
+- **The AI model** only receives the text you highlight or map, the page around it, or the range
+  you ask to recap. Gemini calls send `store: false`. OpenRouter is told to use only upstream
+  providers that don't keep prompts.
 - **Pictures are fetched by the server** and passed on to your browser, so image sites never see
   what you're reading.
 
@@ -175,18 +202,20 @@ npm test
 ```
 
 This starts the app against a throwaway folder and a fake AI, then drives the real interface in
-headless Chrome: upload, resume, highlight-to-explain, recaps, history, zoom and more. It never
-touches your library and makes no network calls. It needs Google Chrome, or set `CHROME_PATH`.
+headless Chrome: upload, resume, highlight-to-explain, mind maps, recaps, history, zoom, the
+reading tracker and more. It never touches your library and makes no network calls. It needs
+Google Chrome, or set `CHROME_PATH`.
 
 ## 🛠️ Under the hood
 
 Plain Express on the server and plain JavaScript in the browser, with no build step.
 [PDF.js](https://mozilla.github.io/pdf.js/) renders the pages, [rough.js](https://roughjs.com/)
-sketches the diagrams, and `node:sqlite` stores everything.
+sketches the diagrams and mind maps, and `node:sqlite` stores everything.
 
 Curious how it works, or want to add a feature? **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
 walks through the code layout and the non-obvious decisions: lazy rendering, how recaps reuse
-work, why diagrams are never drawn by the model, and how each AI provider is handled.
+work, why diagrams and mind maps are never drawn by the model, and how each AI provider is
+handled.
 
 ## 🌱 Ideas for next
 

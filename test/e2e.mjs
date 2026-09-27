@@ -110,6 +110,7 @@ const stub = http.createServer((req, res) => {
     const props = lastCall.body.response_format?.schema?.properties ?? {};
     const answer = props.summary ? RECAP_ANSWER
       : props.points ? CHUNK_ANSWER
+      : props.branches ? MINDMAP_ANSWER
       : EXPLAIN_ANSWER;
 
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -151,6 +152,18 @@ const RECAP_ANSWER = {
       { from: 'atp', to: 'ghost', label: 'dangling' },   // names no node: must be dropped
     ],
   },
+};
+
+const MINDMAP_ANSWER = {
+  title: 'How cells make energy',
+  root: 'Cellular energy',
+  branches: [
+    { label: 'Proton gradient', children: [{ label: 'Built across the membrane' }, { label: '' }] },
+    { label: 'ATP synthase', children: [{ label: 'Turned by the gradient' }] },
+    { label: '', children: [{ label: 'belongs to no branch' }] },   // no label: must be dropped
+    { label: 'proton gradient', children: [] },                      // duplicate: must be dropped
+    { label: 'Uses of ATP', children: [] },
+  ],
 };
 
 const CHUNK_ANSWER = {
@@ -283,6 +296,30 @@ try {
   await page.click('#dark-pages-btn');
   check('toggling again restores light pages', (await canvasFilter()) === 'none');
 
+  // Reading tracker: click a word, the pill starts walking; speed sticks; Escape stops it.
+  const scrollBefore = await page.evaluate(() => document.getElementById('viewer-container').scrollTop);
+  await page.click('#tracker-btn');
+  check('tracker button shows its controls', await page.locator('#tracker-bar').isVisible());
+  await page.locator('.page .textLayer span').filter({ hasText: /\w{3,}/ }).first().click();
+  await page.waitForFunction(() => document.getElementById('tracker-marker').classList.contains('visible'), null, { timeout: 5000 });
+  const markerAt = () => page.evaluate(() => document.getElementById('tracker-marker').style.transform);
+  const firstAt = await markerAt();
+  await page.waitForTimeout(900);
+  const laterAt = await markerAt();
+  check('tracker pill moves while playing', firstAt && laterAt && firstAt !== laterAt, `${firstAt} -> ${laterAt}`);
+  check('tracker shows as playing', await page.locator('#tracker-play.playing').count() === 1);
+  const wpmBefore = await page.evaluate(() => Number(document.getElementById('tracker-speed').value));
+  await page.keyboard.press(']');
+  check('] speeds the tracker up and remembers it',
+    await page.evaluate(() => Number(localStorage.getItem('spr:tracker-wpm'))) === wpmBefore + 25);
+  await page.keyboard.press(' ');
+  check('space pauses the tracker', await page.locator('#tracker-play.playing').count() === 0);
+  await page.keyboard.press('Escape');
+  check('escape turns the tracker off, not the document',
+    !(await page.locator('#tracker-bar').isVisible()) && await page.locator('#reader:not([hidden])').count() === 1);
+  await page.evaluate(() => localStorage.removeItem('spr:tracker-wpm'));
+  await page.evaluate((top) => { document.getElementById('viewer-container').scrollTop = top; }, scrollBefore);
+
   /* scroll -> indicator -> saved progress */
   await page.evaluate(() => {
     const c = document.getElementById('viewer-container');
@@ -328,6 +365,8 @@ try {
 
   const btnBox = await page.locator('#explain-btn').boundingBox();
   const barBox = await page.locator('.toolbar').boundingBox();
+  check('a short highlight does not offer a mind map', !(await page.locator('#mindmap-btn').isVisible()));
+
   check('the button never hides under the toolbar', btnBox.y >= barBox.y + barBox.height,
     `button at y=${Math.round(btnBox.y)}`);
 
@@ -663,6 +702,73 @@ try {
 
   check('deleting an unknown lookup 404s',
     (await fetch(`${BASE}/api/lookups/999999`, { method: 'DELETE' })).status === 404);
+
+  /* ---- mind map of a passage ---- */
+  const mindmapPost = (body) => fetch(`${BASE}/api/mindmap`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ docId: doc.id, page: 1, ...body }),
+  });
+  const passage = 'The mitochondrion builds a proton gradient across its inner membrane, '
+    + 'and ATP synthase uses that gradient to make ATP for the rest of the cell.';
+
+  const callsBeforeMap = calls.length;
+  const map = await (await mindmapPost({ selection: passage, context: 'page text' })).json();
+  check('a mind map comes back as a tree', map.root === 'Cellular energy' && map.title === 'How cells make energy');
+  check('the mind map drops unlabelled and repeated branches',
+    JSON.stringify(map.branches.map((b) => b.label)) === JSON.stringify(['Proton gradient', 'ATP synthase', 'Uses of ATP']),
+    JSON.stringify(map.branches?.map((b) => b.label)));
+  check('the mind map drops empty leaves', map.branches[0].children.length === 1);
+  check('the mind map asks for a tree',
+    Boolean(calls.at(-1).body.response_format?.schema?.properties?.branches));
+
+  const callsAfterMap = calls.length;
+  const mapAgain = await (await mindmapPost({ selection: passage, context: 'page text' })).json();
+  check('mapping the same passage twice is cached', mapAgain.cached === true && calls.length === callsAfterMap);
+  check('a first mind map is not cached', map.cached === false && callsAfterMap > callsBeforeMap);
+
+  check('a passage too short to map is refused',
+    (await mindmapPost({ selection: 'just a few words' })).status === 422);
+  check('an empty selection is refused',
+    (await mindmapPost({ selection: '   ' })).status === 400);
+
+  const longSelected = await page.evaluate(() => {
+    const bounds = document.getElementById('viewer-container').getBoundingClientRect();
+    const spans = [...document.querySelectorAll('.page .textLayer span')].filter((s) => {
+      const r = s.getBoundingClientRect();
+      return s.textContent.trim() && r.top > bounds.top + 40 && r.bottom < bounds.bottom - 40;
+    });
+    if (spans.length < 2) return 0;
+    const pageEl = spans[0].closest('.page');
+    const onPage = spans.filter((s) => s.closest('.page') === pageEl);
+    const range = document.createRange();
+    range.setStart(onPage[0].firstChild, 0);
+    const last = onPage.at(-1).firstChild;
+    range.setEnd(last, last.length);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    document.getElementById('viewer-container').dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    return sel.toString().trim().split(/\s+/).length;
+  });
+  check('found a passage long enough to map', longSelected >= 12, `${longSelected} words`);
+
+  await page.waitForSelector('#mindmap-btn:not([hidden])', { timeout: 4000 })
+    .then(() => check('a long highlight offers a mind map', true))
+    .catch(() => check('a long highlight offers a mind map', false));
+  await page.locator('#mindmap-btn').click().catch(() => {});
+  await page.waitForSelector('#panel .mindmap svg', { timeout: 15000 })
+    .then(() => check('the mind map is drawn in the panel', true))
+    .catch(() => check('the mind map is drawn in the panel', false));
+  const drawn = await page.evaluate(() => ({
+    wide: document.getElementById('panel').classList.contains('panel-wide'),
+    text: document.querySelector('#panel .mindmap svg')?.textContent ?? '',
+    paths: document.querySelectorAll('#panel .mindmap svg path').length,
+  }));
+  check('the mind map shows its topic and branches',
+    drawn.text.includes('Cellular energy') && drawn.text.includes('ATP synthase'), drawn.text);
+  check('the mind map is sketched with rough.js', drawn.paths > 5, `${drawn.paths} paths`);
+  check('the panel widens for a mind map', drawn.wide);
 
   /* ---- recap: the range, the cut, and one call vs several ---- */
   const recapPost = (body) => fetch(`${BASE}/api/recap`, {

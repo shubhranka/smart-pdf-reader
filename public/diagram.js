@@ -19,7 +19,7 @@ const ROW_GAP = 40;       // vertical room for an edge and its label
 const PAD = 10;
 
 /** rough.js bakes literal colours into its paths, so they have to be read each draw. */
-function palette() {
+export function palette() {
   const style = getComputedStyle(document.documentElement);
   const read = (name, fallback) => style.getPropertyValue(name).trim() || fallback;
   return {
@@ -31,13 +31,13 @@ function palette() {
 }
 
 /** A stable seed per shape, so redrawing does not re-randomise the sketch. */
-function seedOf(key) {
+export function seedOf(key) {
   let h = 0;
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) | 0;
   return Math.abs(h) % 100000;
 }
 
-function text(parent, x, y, value, cls, anchor = 'middle') {
+export function text(parent, x, y, value, cls, anchor = 'middle') {
   const el = document.createElementNS(NS, 'text');
   el.setAttribute('x', x);
   el.setAttribute('y', y);
@@ -110,26 +110,18 @@ function arrowHead(parent, x1, y1, x2, y2, colour) {
 }
 
 /**
- * Draw `spec` into `container`. Leaves the container empty when the graph is unusable,
- * so a recap without a good diagram simply shows none.
+ * Empty `container` and redraw it whenever the theme changes.
  *
- * @param {object} spec           {kind, caption, nodes, edges}
- * @param {Element} container
- * @param {(page:number)=>void} [onGoToPage]  called when a node with a page is clicked
- * @param {(page:number)=>string} [pageLabel]  how to print a page number (the book's own)
+ * rough.js writes the colours it was given into the paths it generates, so a theme
+ * change leaves the sketch in the old palette while the labels — plain text, styled
+ * by CSS — follow the new one. Redraw instead.
  */
-export function renderDiagram(spec, container, onGoToPage, pageLabel = String) {
+export function watchTheme(container, draw) {
   // A previous drawing in this slot has watchers on the theme; drop them first.
   container._diagramCleanup?.();
   container.replaceChildren();
-  if (!spec?.nodes?.length || !spec?.edges?.length) return;
 
-  /*
-   * rough.js writes the colours it was given into the paths it generates, so a theme
-   * change leaves the sketch in the old palette while the labels — plain text, styled
-   * by CSS — follow the new one. Redraw instead.
-   */
-  const redraw = () => { if (container.isConnected) renderDiagram(spec, container, onGoToPage); };
+  const redraw = () => { if (container.isConnected) draw(); };
   const scheme = window.matchMedia('(prefers-color-scheme: dark)');
   const observer = new MutationObserver(redraw);
   scheme.addEventListener('change', redraw);
@@ -139,6 +131,20 @@ export function renderDiagram(spec, container, onGoToPage, pageLabel = String) {
     observer.disconnect();
     container._diagramCleanup = null;
   };
+}
+
+/**
+ * Draw `spec` into `container`. Leaves the container empty when the graph is unusable,
+ * so a recap without a good diagram simply shows none.
+ *
+ * @param {object} spec           {kind, caption, nodes, edges}
+ * @param {Element} container
+ * @param {(page:number)=>void} [onGoToPage]  called when a node with a page is clicked
+ * @param {(page:number)=>string} [pageLabel]  how to print a page number (the book's own)
+ */
+export function renderDiagram(spec, container, onGoToPage, pageLabel = String) {
+  watchTheme(container, () => renderDiagram(spec, container, onGoToPage, pageLabel));
+  if (!spec?.nodes?.length || !spec?.edges?.length) return;
 
   const view = layout(spec);
   const colour = palette();

@@ -65,6 +65,13 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  mindmap: (payload) =>
+    request('/api/mindmap', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+
   // A long recap can run for a minute, so the caller keeps a signal to stop waiting on it.
   recap: (payload, signal) =>
     request('/api/recap', {

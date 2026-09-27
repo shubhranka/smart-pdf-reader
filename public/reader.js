@@ -1,6 +1,8 @@
 import * as pdfjsLib from '/vendor/pdfjs/build/pdf.mjs';
 import { api, fileUrl, getDocument } from './api.js';
 import { renderDiagram } from './diagram.js';
+import { createTracker, MIN_WPM, MAX_WPM, WPM_STEP } from './tracker.js';
+import { renderMindmap } from './mindmap.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/build/pdf.worker.mjs';
 
@@ -44,6 +46,7 @@ const el = {
   explainBtn: document.getElementById('explain-btn'),
   selActions: document.getElementById('sel-actions'),
   recapHereBtn: document.getElementById('recap-here-btn'),
+  mindmapBtn: document.getElementById('mindmap-btn'),
   recapBtn: document.getElementById('recap-btn'),
   recapRange: document.getElementById('recap-range'),
   recapFrom: document.getElementById('recap-from'),
@@ -69,11 +72,23 @@ const el = {
   historyEmpty: document.getElementById('history-empty'),
   historyClose: document.getElementById('history-close'),
   historyClear: document.getElementById('history-clear'),
+  trackerBtn: document.getElementById('tracker-btn'),
+  trackerMarker: document.getElementById('tracker-marker'),
+  trackerBar: document.getElementById('tracker-bar'),
+  trackerPlay: document.getElementById('tracker-play'),
+  trackerSlower: document.getElementById('tracker-slower'),
+  trackerFaster: document.getElementById('tracker-faster'),
+  trackerSpeed: document.getElementById('tracker-speed'),
+  trackerWpm: document.getElementById('tracker-wpm'),
+  trackerHint: document.getElementById('tracker-hint'),
+  trackerClose: document.getElementById('tracker-close'),
 };
 
 /** Everything about the document currently open. Reset by `close()`. */
 let state = null;
 let onExit = () => {};
+/** The reading pacer. Outlives documents; `close()` switches it off. */
+let tracker = null;
 
 const clamp = (n, lo, hi) => Math.min(Math.max(n, lo), hi);
 
@@ -134,6 +149,7 @@ function applyZoomVars() {
   for (const slot of state.slots) {
     if (slot.inner) slot.inner.style.setProperty('--zoom-ratio', state.liveZoom / slot.renderedZoom);
   }
+  tracker?.refresh();
 }
 
 function sizeAllSlots() {
@@ -440,6 +456,14 @@ function commitZoom() {
   syncPageIndicator();
 }
 
+const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', ' ', 'Home', 'End']);
+
+/** Toggle browser fullscreen for the whole app (the `f` key). */
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else document.documentElement.requestFullscreen?.().catch(() => {});
+}
+
 /** Jump straight to a zoom level — the buttons, the keyboard and the ladder. */
 function setZoom(next, anchor = centreAnchor()) {
   const target = clamp(Number(next.toFixed(3)), MIN_ZOOM, MAX_ZOOM);
@@ -629,6 +653,8 @@ function showExplainButton(sel) {
   group.hidden = false;
   el.explainBtn.hidden = false;
   el.recapHereBtn.hidden = false;
+  // A word or a phrase has no structure to map.
+  el.mindmapBtn.hidden = sel.text.split(/\s+/).length < MINDMAP_MIN_WORDS;
 
   const { width, height } = group.getBoundingClientRect();
   const gap = 8;
@@ -642,10 +668,13 @@ function showExplainButton(sel) {
   group.style.top = `${clamp(top, bounds.top + gap, window.innerHeight - height - 8)}px`;
 }
 
+const MINDMAP_MIN_WORDS = 12; // matches the server's floor
+
 function hideExplainButton() {
   el.selActions.hidden = true;
   el.explainBtn.hidden = true;
   el.recapHereBtn.hidden = true;
+  el.mindmapBtn.hidden = true;
   state && (state.pendingSelection = null);
 }
 
@@ -665,8 +694,9 @@ function showDrawer(which /* 'panel' | 'history' | 'recaps' | null */) {
   el.recaps.hidden = which !== 'recaps';
 }
 
-function openPanel(kindLabel, html) {
+function openPanel(kindLabel, html, { wide = false } = {}) {
   if (state) state.panelToken = (state.panelToken ?? 0) + 1;
+  el.panel.classList.toggle('panel-wide', wide);
   el.panelKind.textContent = kindLabel;
   el.panelBody.innerHTML = html;
   showDrawer('panel');
@@ -769,6 +799,38 @@ async function runExplain(selection) {
     renderResult(result, selection.text);
     loadHistory();
   } catch (err) {
+    openPanel('error', `<div class="panel-error">${escapeHtml(err.message)}
+      ${err.hint ? `<span class="hint">${escapeHtml(err.hint)}</span>` : ''}</div>`);
+  }
+}
+
+/* -------------------------------- mind map -------------------------------- */
+
+async function runMindmap(selection) {
+  hideExplainButton();
+  clearHighlight();
+  openPanel('mind map', '<div class="panel-loading">Mapping out this passage…</div>', { wide: true });
+  const token = state.panelToken;
+
+  const slot = state.slots[selection.page - 1];
+  try {
+    const result = await api.mindmap({
+      docId: state.docId,
+      page: selection.page,
+      selection: selection.text,
+      context: slot?.text ?? '',
+    });
+    if (token !== state?.panelToken) return; // the reader moved on
+
+    openPanel('mind map', `
+      <h3 class="panel-headline">${escapeHtml(result.title)}</h3>
+      <p class="panel-selection">“${escapeHtml(selection.text)}”</p>
+      <div class="mindmap"></div>
+      ${result.cached ? '<p class="cached-note">From cache — you mapped this before.</p>' : ''}
+    `, { wide: true });
+    renderMindmap(result, el.panelBody.querySelector('.mindmap'));
+  } catch (err) {
+    if (token !== state?.panelToken) return;
     openPanel('error', `<div class="panel-error">${escapeHtml(err.message)}
       ${err.hint ? `<span class="hint">${escapeHtml(err.hint)}</span>` : ''}</div>`);
   }
@@ -1150,6 +1212,24 @@ function setDarkPages(on, { remember = true } = {}) {
   try { localStorage.setItem('spr:dark-pages', on ? '1' : '0'); } catch { /* private mode */ }
 }
 
+/* -------------------------------- tracker --------------------------------- */
+
+function syncTrackerUi() {
+  const on = tracker.on;
+  el.reader.classList.toggle('tracking', on);
+  el.trackerBtn.classList.toggle('active', on);
+  el.trackerBtn.setAttribute('aria-pressed', String(on));
+  el.trackerBar.hidden = !on;
+  el.trackerPlay.classList.toggle('playing', tracker.playing);
+  el.trackerPlay.setAttribute('aria-label', tracker.playing ? 'Pause tracker' : 'Start tracker');
+  el.trackerPlay.title = tracker.playing ? 'Pause (space)' : 'Play (space)';
+  el.trackerHint.hidden = tracker.started;
+  el.trackerSpeed.value = String(tracker.wpm);
+  el.trackerWpm.textContent = `${tracker.wpm} wpm`;
+  el.trackerSlower.disabled = tracker.wpm <= MIN_WPM;
+  el.trackerFaster.disabled = tracker.wpm >= MAX_WPM;
+}
+
 /** Fraction of the way down its page that an entry's heading sits. */
 async function headingFraction(node) {
   const page = await state.pdf.getPage(node.page);
@@ -1303,6 +1383,7 @@ export function close() {
     state.pdf.destroy?.();
     state = null;
   }
+  tracker?.setOn(false);
   el.viewer.replaceChildren();
   el.outlineTree.replaceChildren();
   el.outline.hidden = true;
@@ -1334,6 +1415,29 @@ export function initReader(exitHandler) {
   }, { passive: true });
 
   el.back.addEventListener('click', () => onExit());
+
+  /* --- tracker --- */
+  tracker = createTracker({
+    container: el.container,
+    marker: el.trackerMarker,
+    getSlots: () => state?.slots ?? [],
+    getLiveZoom: () => state?.liveZoom ?? 1,
+    renderPage: (slot) => renderPage(slot),
+    readingLine: () => locate(),
+    onChange: syncTrackerUi,
+  });
+  el.trackerSpeed.min = String(MIN_WPM);
+  el.trackerSpeed.max = String(MAX_WPM);
+  el.trackerSpeed.step = String(WPM_STEP);
+  syncTrackerUi();
+  el.trackerBtn.addEventListener('click', () => state && tracker.setOn(!tracker.on));
+  el.trackerClose.addEventListener('click', () => tracker.setOn(false));
+  el.trackerPlay.addEventListener('click', () => tracker.togglePlay());
+  el.trackerSlower.addEventListener('click', () => tracker.nudge(-1));
+  el.trackerFaster.addEventListener('click', () => tracker.nudge(1));
+  el.trackerSpeed.addEventListener('input', () => tracker.setWpm(Number(el.trackerSpeed.value)));
+  // Buttons in the bar never take focus, so Space keeps meaning play/pause.
+  for (const b of el.trackerBar.querySelectorAll('button')) b.addEventListener('mousedown', (e) => e.preventDefault());
   el.outlineBtn.addEventListener('click', () => state && setOutlineOpen(el.outline.hidden));
   setDarkPages(darkPagesPreferred(), { remember: false });
   el.darkPagesBtn.addEventListener('click', () => setDarkPages(!el.reader.classList.contains('pages-dark')));
@@ -1392,11 +1496,19 @@ export function initReader(exitHandler) {
   });
 
   // Selection: capture it on mouseup, before clicking the button can clear it.
-  el.container.addEventListener('mouseup', () => {
+  el.container.addEventListener('mouseup', (e) => {
     if (!state) return;
     setTimeout(() => {
       const sel = readSelection();
-      if (!sel) return hideExplainButton();
+      if (!sel) {
+        hideExplainButton();
+        // With the tracker on, a plain click on the text starts it from that word.
+        const pageEl = e.target.closest?.('.page');
+        if (tracker.on && e.button === 0 && pageEl) {
+          tracker.startAt(state.slots[Number(pageEl.dataset.page) - 1], e.clientX, e.clientY);
+        }
+        return;
+      }
       state.pendingSelection = sel;
       showExplainButton(sel);
     }, 0);
@@ -1410,6 +1522,11 @@ export function initReader(exitHandler) {
   el.explainBtn.addEventListener('mousedown', (e) => e.preventDefault());
   el.explainBtn.addEventListener('click', () => {
     if (state?.pendingSelection) runExplain(state.pendingSelection);
+  });
+
+  el.mindmapBtn.addEventListener('mousedown', (e) => e.preventDefault());
+  el.mindmapBtn.addEventListener('click', () => {
+    if (state?.pendingSelection) runMindmap(state.pendingSelection);
   });
 
   el.recapHereBtn.addEventListener('mousedown', (e) => e.preventDefault());
@@ -1498,13 +1615,35 @@ export function initReader(exitHandler) {
       if (!el.panel.hidden) { el.panel.hidden = true; clearHighlight(); return; }
       if (!el.recaps.hidden) return void (el.recaps.hidden = true);
       if (!el.history.hidden) return void (el.history.hidden = true);
+      if (tracker.on) return void tracker.setOn(false);
       onExit();
     }
     if (e.target.closest?.('input, textarea')) return;
+    const plain = !e.metaKey && !e.ctrlKey && !e.altKey;
+    if ((e.key === 't' || e.key === 'T') && plain && !e.repeat) tracker.setOn(!tracker.on);
+    if (tracker.on && plain) {
+      if (e.key === ' ') { e.preventDefault(); if (!e.repeat) tracker.togglePlay(); return; }
+      if (e.key === '[') tracker.nudge(-1);
+      if (e.key === ']') tracker.nudge(1);
+      // Scrolling by keyboard is the reader taking over, same as the wheel.
+      if (SCROLL_KEYS.has(e.key)) tracker.pause();
+    }
+    if (SCROLL_KEYS.has(e.key)) document.body.classList.add('cursor-hidden');
     if (e.key === '\\' && !el.outlineBtn.hidden && !e.metaKey && !e.ctrlKey) setOutlineOpen(el.outline.hidden);
+    if ((e.key === 'f' || e.key === 'F') && !e.metaKey && !e.ctrlKey && !e.altKey && !e.repeat) toggleFullscreen();
     if ((e.key === '=' || e.key === '+') && (e.metaKey || e.ctrlKey)) { e.preventDefault(); setZoom(nextZoomStop(1)); }
     if (e.key === '-' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); setZoom(nextZoomStop(-1)); }
     if (e.key === '0' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); setZoom(1); }
+  });
+
+  // Keyboard scrolling hides the cursor; a real mouse move brings it back.
+  // Compare positions because browsers fire synthetic mousemoves while
+  // content scrolls under a still pointer.
+  let lastPointer = null;
+  document.addEventListener('mousemove', (e) => {
+    const moved = !lastPointer || lastPointer.x !== e.screenX || lastPointer.y !== e.screenY;
+    lastPointer = { x: e.screenX, y: e.screenY };
+    if (moved) document.body.classList.remove('cursor-hidden');
   });
 
   // Last chance to persist the page when the tab goes away.

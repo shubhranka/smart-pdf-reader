@@ -74,6 +74,10 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>
     </button>
 
+    <button id="tracker-btn" class="icon-btn" title="Reading tracker (t)" aria-label="Reading tracker" aria-pressed="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5.5h18M3 18.5h18"/><rect x="3" y="9" width="10" height="6" rx="3"/><path d="M16.5 12H21"/></svg>
+    </button>
+
     <button id="recap-btn" class="icon-btn" title="Catch me up" aria-label="Catch me up on what I have read">
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <path d="M3.5 12a8.5 8.5 0 1 0 2.9-6.4L3 8"/>
@@ -103,7 +107,28 @@
 
     <div id="viewer-container" class="viewer-container">
       <div id="viewer" class="viewer"></div>
+      <div id="tracker-marker" class="tracker-marker" aria-hidden="true"></div>
     </div>
+  </div>
+
+  <!-- Reading tracker controls -->
+  <div id="tracker-bar" class="tracker-bar" role="toolbar" aria-label="Reading tracker" hidden>
+    <button id="tracker-play" class="icon-btn tracker-play" title="Play (space)" aria-label="Start tracker">
+      <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10.5-6.5z"/></svg>
+      <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5.5v13M15 5.5v13"/></svg>
+    </button>
+    <span id="tracker-hint" class="tracker-hint">Click a word to start</span>
+    <button id="tracker-slower" class="icon-btn" title="Slower ([)" aria-label="Slower">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>
+    </button>
+    <input id="tracker-speed" class="tracker-speed" type="range" aria-label="Reading speed, words per minute">
+    <button id="tracker-faster" class="icon-btn" title="Faster (])" aria-label="Faster">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
+    <span id="tracker-wpm" class="tracker-wpm"></span>
+    <button id="tracker-close" class="icon-btn" title="Turn off tracker (esc)" aria-label="Turn off tracker">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    </button>
   </div>
 
   <!-- Range picker, dropped from the toolbar button -->
@@ -133,6 +158,14 @@
         <path d="M3.5 12a8.5 8.5 0 1 0 2.9-6.4L3 8"/><path d="M3 3.5V8h4.5"/>
       </svg>
       Recap up to here
+    </button>
+    <button id="mindmap-btn" class="explain-btn mindmap-here" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="2.6"/><circle cx="4.5" cy="5.5" r="1.8"/><circle cx="19.5" cy="5.5" r="1.8"/>
+        <circle cx="4.5" cy="18.5" r="1.8"/><circle cx="19.5" cy="18.5" r="1.8"/>
+        <path d="M10 10.3 6 7M14 10.3 18 7M10 13.7 6 17M14 13.7 18 17"/>
+      </svg>
+      Mind map
     </button>
   </div>
 

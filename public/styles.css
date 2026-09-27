@@ -319,6 +319,68 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .page.placeholder::after { content: ""; width: 22px; height: 22px; border: 2px solid var(--border); border-top-color: var(--text-dim); border-radius: 50%; animation: spin 0.7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ---------------------------- reading tracker ---------------------------- */
+
+/* One pill for the whole document, moved by transform from tracker.js. It sits above
+   the pages but lets every click through, and multiplies so the glyphs stay crisp. */
+.tracker-marker {
+  position: absolute;
+  top: 0; left: 0;
+  z-index: 3;
+  width: 0; height: 0;
+  border-radius: 0.4em;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 34%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+  mix-blend-mode: multiply;
+  transform-origin: 50% 50%;
+  will-change: transform, width, height;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+.tracker-marker.visible { opacity: 1; }
+#reader.pages-dark .tracker-marker {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+  mix-blend-mode: screen;
+}
+/* Clicking picks a word, so say so. */
+#reader.tracking .page .textLayer { cursor: pointer; }
+
+.tracker-bar {
+  position: fixed;
+  left: 50%; bottom: 20px;
+  z-index: 30;
+  transform: translateX(-50%);
+  display: flex; align-items: center; gap: 0.25rem;
+  padding: 0.3rem 0.45rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: var(--shadow-lg);
+  animation: tracker-bar-in 0.32s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes tracker-bar-in {
+  from { opacity: 0; transform: translate(-50%, 14px) scale(0.94); }
+  to   { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+.tracker-play { background: var(--accent); color: #fff; border-radius: 999px; }
+.tracker-play:hover:not(:disabled) { background: var(--accent); color: #fff; filter: brightness(1.08); }
+.tracker-play .icon-play { fill: currentColor; stroke: none; }
+.tracker-play .icon-pause, .tracker-play.playing .icon-play { display: none; }
+.tracker-play.playing .icon-pause { display: block; }
+.tracker-hint { font-size: 0.75rem; color: var(--text-dim); padding: 0 0.35rem; white-space: nowrap; }
+.tracker-speed { width: 120px; accent-color: var(--accent); }
+.tracker-wpm { font-size: 0.78rem; color: var(--text-dim); min-width: 5.2em; text-align: center; font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce) {
+  .tracker-bar { animation: none; }
+}
+@media (max-width: 640px) {
+  .tracker-bar { left: 16px; right: 16px; bottom: 12px; transform: none; justify-content: space-between; }
+  @keyframes tracker-bar-in { from { opacity: 0; } to { opacity: 1; } }
+  .tracker-speed { flex: 1; min-width: 0; width: auto; }
+  .tracker-hint { display: none; }
+}
+
 /* ---------------------------- selection actions ---------------------------- */
 
 /* The wrapper is what gets positioned; the buttons inside keep their own `hidden`. */
@@ -343,12 +405,12 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 @keyframes pop { from { opacity: 0; transform: scale(0.92); } to { opacity: 1; transform: scale(1); } }
 
 /* The second action is the quieter of the two — a recap is the bigger commitment. */
-.recap-here {
+.recap-here, .mindmap-here {
   background: var(--surface);
   color: var(--text);
   border: 1px solid var(--border);
 }
-.recap-here svg { fill: none; stroke: currentColor; stroke-width: 2; }
+.recap-here svg, .mindmap-here svg { fill: none; stroke: currentColor; stroke-width: 2; }
 
 /* ------------------------------ recap range ------------------------------ */
 
@@ -493,6 +555,13 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .recap-diagram .dg-node-link { cursor: pointer; }
 .recap-diagram .dg-node-link:hover .dg-label { fill: var(--accent); }
 .recap-diagram .dg-node-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Mind map: the panel widens so the two sides have room. */
+.panel.panel-wide { width: min(720px, calc(100vw - 32px)); max-height: min(80vh, 760px); }
+.mindmap svg { display: block; width: 100%; height: auto; }
+.mindmap svg text { stroke: none; stroke-width: 0; }
+.mindmap .mm-root-label   { font-size: 14px; font-weight: 650; fill: var(--text); }
+.mindmap .mm-branch-label { font-size: 12.5px; font-weight: 550; fill: var(--text); }
+.mindmap .mm-leaf         { font-size: 11px; fill: var(--text-dim); }
 .dg-caption { margin: 0.4rem 0 0; font-size: 0.75rem; color: var(--text-dim); font-style: italic; }
 
 .head-actions { display: flex; align-items: center; gap: 0.25rem; }
@@ -531,7 +600,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 @media (max-width: 640px) {
   .toolbar { gap: 0.25rem; padding: 0 0.35rem; }
   .doc-title { display: none; }
-  .panel, .history, .recaps { right: 8px; left: 8px; bottom: 8px; width: auto; }
+  .panel, .panel.panel-wide, .history, .recaps { right: 8px; left: 8px; bottom: 8px; width: auto; }
   .recap-range { right: 8px; left: 8px; width: auto; }
   /* No room to push the pages aside on a phone: float over them instead. */
   .outline {
@@ -540,3 +609,6 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
   }
   .page-physical { display: none; }
 }
+
+/* Hidden while scrolling with the keyboard (reader.js). */
+body.cursor-hidden, body.cursor-hidden * { cursor: none !important; }

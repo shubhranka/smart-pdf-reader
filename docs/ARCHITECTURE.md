@@ -9,7 +9,8 @@ public/            the browser side, no build step
   app.js             hash routing: library  <->  #/doc/<id>
   library.js         upload, drag-and-drop, document list
   reader.js          PDF.js viewer, scroll tracking, selection, panels
-  diagram.js         lays out and sketches a recap's diagram with rough.js
+  diagram.js         lays out and sketches a recap's diagram with rough.js; shared sketch helpers
+  mindmap.js         lays out and sketches a passage's mind map with rough.js
   api.js             fetch wrappers
 
 server/
@@ -29,6 +30,7 @@ server/
   features/
     explain.js       lookup prompt, schema and response cache
     recap.js         recap prompts, one call vs map-reduce, chunk cache
+    mindmap.js       mind map prompt, schema, tree clean-up and cache
     images.js        picture search and the image proxy's host list
   pdf/
     pagetext.js      server-side page text, cached per page, and the line cut
@@ -68,7 +70,10 @@ test/e2e.mjs       drives the real UI in Chrome against a stub Gemini
   `public/diagram.js` decides the layout, where the panel's real width is known. rough.js
   writes its colours into the paths it generates, so the sketch is **redrawn on a theme
   change** — otherwise it keeps the old palette while the labels, which are plain text styled
-  by CSS, follow the new one.
+  by CSS, follow the new one. The **mind map works the same way**: the model returns a tree of
+  labels (topic, branches, leaves), `features/mindmap.js` drops empty and repeated labels, and
+  `public/mindmap.js` places the branches either side of the topic and sizes each row from its
+  wrapped labels. Both drawings share `watchTheme()` from `diagram.js` for the redraw.
 - **A lookup and a recap want different amounts of thinking.** A definition is recall, so it
   asks for `minimal`. A recap is selection and ordering across tens of thousands of words, so
   it asks for `low` — and chunk notes go back to `minimal`, because that cost is multiplied by

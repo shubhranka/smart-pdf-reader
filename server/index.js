@@ -11,6 +11,7 @@ import { ExplainError } from './errors.js';
 import { PROVIDER } from './llm/index.js';
 import { explain } from './features/explain.js';
 import { generateRecap } from './features/recap.js';
+import { generateMindmap } from './features/mindmap.js';
 import { findImage, ALLOWED_IMAGE_HOSTS } from './features/images.js';
 import { cutKey } from './pdf/pagetext.js';
 import { inspectPdf } from './pdf/pdfinfo.js';
@@ -182,6 +183,16 @@ app.post('/api/explain', asyncRoute(async (req, res) => {
   }
 
   res.json(result);
+}));
+
+/* --------------------------------- mind map -------------------------------- */
+
+app.post('/api/mindmap', asyncRoute(async (req, res) => {
+  const { selection, context } = req.body ?? {};
+  if (typeof selection !== 'string' || !selection.trim()) {
+    return res.status(400).json({ error: 'Nothing was selected.' });
+  }
+  res.json(await generateMindmap({ selection, context: typeof context === 'string' ? context : '' }));
 }));
 
 /* ---------------------------------- recap --------------------------------- */
