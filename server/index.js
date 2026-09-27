@@ -13,6 +13,7 @@ import { explain } from './features/explain.js';
 import { generateRecap } from './features/recap.js';
 import { generateMindmap } from './features/mindmap.js';
 import { findImage, ALLOWED_IMAGE_HOSTS } from './features/images.js';
+import { speechStatus, loadSpeech, checkSpeechRequest, synthesize } from './features/speech.js';
 import { cutKey } from './pdf/pagetext.js';
 import { inspectPdf } from './pdf/pdfinfo.js';
 
@@ -302,6 +303,32 @@ app.get('/api/image/file', asyncRoute(async (req, res) => {
   res.type(type);
   res.set('cache-control', 'public, max-age=604800, immutable');
   res.send(Buffer.from(await upstream.arrayBuffer()));
+}));
+
+/* ------------------------------ read aloud ------------------------------- */
+
+app.get('/api/speech/status', (_req, res) => {
+  res.json(speechStatus());
+});
+
+// Asked for as soon as the reader turns the voice on, so the model is warm by the time
+// the first sentence is wanted. Answers straight away; poll the status for progress.
+app.post('/api/speech/load', (_req, res) => {
+  loadSpeech();
+  res.json(speechStatus());
+});
+
+app.post('/api/speech', asyncRoute(async (req, res) => {
+  const job = checkSpeechRequest(req.body);
+  // The reader skipping ahead aborts the fetch; don't spend the CPU on it regardless.
+  let gone = false;
+  res.on('close', () => { if (!res.writableEnded) gone = true; });
+
+  const wav = await synthesize(job, () => gone);
+  if (!wav || gone) return;
+  res.type('audio/wav');
+  res.set('cache-control', 'no-store');
+  res.send(wav);
 }));
 
 /* -------------------------------- static --------------------------------- */

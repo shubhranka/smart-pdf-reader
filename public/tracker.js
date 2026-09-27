@@ -9,6 +9,9 @@
  * springs carry the pill there — which is what makes it smooth rather than stepped.
  */
 
+import { buildChunk, SENTENCE_END } from './speech-text.js';
+import { createNarrator, MIN_SPEAK_WPM, MAX_SPEAK_WPM } from './narrator.js';
+
 export const MIN_WPM = 100;
 export const MAX_WPM = 800;
 export const WPM_STEP = 25;
@@ -20,6 +23,10 @@ const READING_LINE = 0.38;       // the pill is kept this far down the viewport
 const FOLLOW_RATE = 4;           // how quickly the scroll catches up, per second
 const TELEPORT_LINES = 4;        // hops further than this skip most of the way
 const SKIP_EMPTY_PAGES = 5;      // image-only pages passed over before giving up
+const DEFAULT_SPEAK_WPM = 175;   // an easy speaking pace; reading silently runs faster
+const FIRST_CHUNK = { maxWords: 18, softWords: 6 }; // short, so the voice starts quickly
+const NEXT_CHUNK = { maxWords: 30 };
+const LOOKAHEAD = 3;             // chunks fetched ahead, so a long one is ready in time
 
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 const clamp = (n, lo, hi) => Math.min(Math.max(n, lo), hi);
@@ -112,7 +119,7 @@ function dwellMs(word, wpm) {
   const base = 60000 / wpm;
   const len = word.text.replace(/[^\p{L}\p{N}]/gu, '').length;
   let factor = clamp(0.7 + len * 0.09, 0.7, 1.6);
-  if (/[.!?:]["'”’)\]]*$/.test(word.text)) factor *= 1.6;
+  if (SENTENCE_END.test(word.text)) factor *= 1.6;
   else if (/[,;]["'”’)\]]*$/.test(word.text)) factor *= 1.25;
   return base * factor;
 }
@@ -127,15 +134,18 @@ function dwellMs(word, wpm) {
  * @param {() => number} host.getLiveZoom
  * @param {(slot) => Promise} host.renderPage
  * @param {() => {page:number, offsetPct:number}} host.readingLine
- * @param {() => void} host.onChange     the mode, play state or speed changed
+ * @param {() => void} host.onChange     the mode, play state, speed or narration changed
  */
 export function createTracker(host) {
   const { container, marker } = host;
+  const narrator = createNarrator({ onChange: () => host.onChange() });
 
   const t = {
     on: false,
     playing: false,
-    wpm: loadWpm(),
+    wpm: loadWpm('spr:tracker-wpm', DEFAULT_WPM, MIN_WPM, MAX_WPM),
+    speakWpm: loadWpm('spr:tracker-narrate-wpm', DEFAULT_SPEAK_WPM, MIN_SPEAK_WPM, MAX_SPEAK_WPM),
+    narrate: loadNarrate(),
     cursor: null,        // { slot, i }
     elapsed: 0,          // ms spent on the current word
     waiting: false,      // the next page is still rendering
@@ -149,12 +159,17 @@ export function createTracker(host) {
   let landing = false;
   let placed = false;        // springs start where the first word is, not at 0,0
 
-  function loadWpm() {
+  function loadWpm(key, fallback, lo, hi) {
     try {
-      const saved = Number(localStorage.getItem('spr:tracker-wpm'));
-      if (saved) return clamp(saved, MIN_WPM, MAX_WPM);
+      const saved = Number(localStorage.getItem(key));
+      if (saved) return clamp(saved, lo, hi);
     } catch { /* private mode */ }
-    return DEFAULT_WPM;
+    return fallback;
+  }
+
+  function loadNarrate() {
+    try { return narrator.available && localStorage.getItem('spr:tracker-narrate') === '1'; }
+    catch { return false; }
   }
 
   async function ensureWords(slot) {
@@ -245,7 +260,8 @@ export function createTracker(host) {
     const scrollTop = container.scrollTop;
     const scrollLeft = container.scrollLeft;
 
-    if (t.playing && !t.waiting) {
+    // While reading aloud, the voice moves the pill; otherwise the clock does.
+    if (t.playing && !t.waiting && !speech.active) {
       t.elapsed += dt * 1000;
       if (t.elapsed >= dwellMs(word, t.wpm)) advance();
     }
@@ -306,6 +322,114 @@ export function createTracker(host) {
     t.frame = requestAnimationFrame(frame);
   }
 
+  /* ------------------------------ narration ------------------------------- */
+
+  // While reading aloud, the voice sets the pace: each word it starts saying moves the
+  // pill. It is handed a sentence at a time (see speech-text.js), the next few fetched
+  // while this one plays. Pausing cancels rather than trusting speechSynthesis.pause(),
+  // which several browsers get wrong, and resuming says the interrupted sentence again.
+  const speech = {
+    gen: 0,          // bumped on every stop, so a stopped chunk's callbacks are ignored
+    active: false,   // the voice has the pace, so the clock keeps out of it
+    chunk: null,     // what is being said
+    next: null,      // a promise of what comes after it
+    again: null,     // the chunk a pause interrupted, to start over from
+    retune: 0,
+  };
+
+  const pageFor = async (num) => {
+    const slot = host.getSlots()[num - 1];
+    if (!slot) return null;
+    const words = await ensureWords(slot);
+    return { words: words ?? [], height: slot.baseH };
+  };
+
+  function moveToWord(w) {
+    const slot = host.getSlots()[w.page - 1];
+    if (!slot?.words?.[w.i]) return;
+    if (t.cursor?.slot !== slot || t.cursor.i !== w.i) moveTo(slot, w.i);
+  }
+
+  function stopSpeech() {
+    speech.gen++;
+    speech.active = false;
+    speech.chunk = null;
+    speech.next = null;
+    clearTimeout(speech.retune);
+    narrator.stop();
+  }
+
+  /** Start reading aloud from the cursor, or from the start of `replay`. */
+  function speak(replay = null) {
+    stopSpeech();
+    if (!t.narrate || !t.playing || !t.cursor) return;
+    narrator.unlock(); // still inside the click or key press that got us here
+    const gen = speech.gen;
+    speech.active = true;
+    const from = { page: t.cursor.slot.num, i: t.cursor.i };
+    const first = replay ? Promise.resolve(replay) : buildChunk(pageFor, from, FIRST_CHUNK);
+    first.then((chunk) => { if (gen === speech.gen) run(chunk, gen); });
+  }
+
+  /** Fetch the audio for the `left` chunks from `from` on, so it is there when wanted. */
+  function lookAhead(from, gen, left) {
+    if (!from || left <= 0) return;
+    buildChunk(pageFor, from, NEXT_CHUNK).then((c) => {
+      if (!c || gen !== speech.gen) return;
+      narrator.prefetch(c, t.speakWpm);
+      lookAhead(c.next, gen, left - 1);
+    });
+  }
+
+  function run(chunk, gen) {
+    if (!chunk) { speech.chunk = null; pause(); return; } // nothing left to read
+    speech.chunk = chunk;
+    const next = chunk.next ? buildChunk(pageFor, chunk.next, NEXT_CHUNK) : Promise.resolve(null);
+    speech.next = next;
+    lookAhead(chunk.next, gen, LOOKAHEAD);
+
+    narrator.say(chunk, t.speakWpm, {
+      onWord: (k) => { if (gen === speech.gen) moveToWord(chunk.words[k]); },
+      onEnd: () => {
+        if (gen !== speech.gen) return;
+        moveToWord(chunk.words[chunk.words.length - 1]);
+        next.then((c) => { if (gen === speech.gen) run(c, gen); });
+      },
+      onError: () => {
+        // No voice to be had: the clock takes the pace back.
+        if (gen !== speech.gen) return;
+        speech.active = false;
+        t.elapsed = 0;
+      },
+    });
+  }
+
+  function setNarrate(on) {
+    on = Boolean(on) && narrator.available;
+    if (t.narrate === on) return;
+    t.narrate = on;
+    try { localStorage.setItem('spr:tracker-narrate', on ? '1' : '0'); } catch { /* private mode */ }
+    t.elapsed = 0;
+    speech.again = null;
+    if (on) {
+      narrator.prepare(true);
+      speak();
+    } else {
+      stopSpeech();
+    }
+    host.onChange();
+  }
+
+  function setVoice(id) {
+    if (!narrator.setVoice(id)) return;
+    // Let the reader hear the new voice straight away: say this sentence again in it.
+    const again = speech.chunk;
+    if (again && t.playing) {
+      moveToWord(again.words[0]);
+      speak(again);
+    }
+  }
+
   /* ------------------------------ controls -------------------------------- */
 
   async function startFromReadingLine() {
@@ -334,18 +458,29 @@ export function createTracker(host) {
         if (!ok) { t.playing = false; host.onChange(); return; }
         setVisible(true);
         kick();
+        speak();
       });
       return;
     }
     t.playing = true;
     setVisible(true);
     kick();
+    const again = speech.again;
+    speech.again = null;
+    if (again && t.narrate) {
+      moveToWord(again.words[0]);
+      speak(again);
+    } else {
+      speak();
+    }
     host.onChange();
   }
 
   function pause() {
     if (!t.playing) return;
     t.playing = false;
+    speech.again = speech.chunk;
+    stopSpeech();
     host.onChange();
   }
 
@@ -371,21 +506,39 @@ export function createTracker(host) {
       if (d < bestD) { bestD = d; best = i; }
     });
 
+    speech.again = null;
     moveTo(slot, best);
     play();
   }
 
   function setWpm(next) {
-    t.wpm = clamp(Math.round(next / WPM_STEP) * WPM_STEP, MIN_WPM, MAX_WPM);
-    try { localStorage.setItem('spr:tracker-wpm', String(t.wpm)); } catch { /* private mode */ }
+    const round = Math.round(next / WPM_STEP) * WPM_STEP;
+    if (t.narrate) {
+      t.speakWpm = clamp(round, MIN_SPEAK_WPM, MAX_SPEAK_WPM);
+      try { localStorage.setItem('spr:tracker-narrate-wpm', String(t.speakWpm)); } catch { /* private mode */ }
+      // The sentence being said finishes at its pace; what follows is fetched at the new one.
+      clearTimeout(speech.retune);
+      const gen = speech.gen;
+      speech.retune = setTimeout(() => {
+        if (gen !== speech.gen || !speech.chunk) return;
+        narrator.dropStale(t.speakWpm);
+        lookAhead(speech.chunk.next, gen, LOOKAHEAD);
+      }, 250);
+    } else {
+      t.wpm = clamp(round, MIN_WPM, MAX_WPM);
+      try { localStorage.setItem('spr:tracker-wpm', String(t.wpm)); } catch { /* private mode */ }
+    }
     host.onChange();
   }
 
   function setOn(on) {
     if (t.on === on) return;
     t.on = on;
+    if (on && t.narrate) narrator.prepare(); // warm the voice while a word is picked
     if (!on) {
       t.playing = false;
+      speech.again = null;
+      stopSpeech();
       t.cursor = null;
       t.waiting = false;
       placed = false;
@@ -408,8 +561,16 @@ export function createTracker(host) {
     get on() { return t.on; },
     get playing() { return t.playing; },
     get started() { return Boolean(t.cursor); },
-    get wpm() { return t.wpm; },
+    /** The speed the slider shows: the speaking pace while reading aloud. */
+    get wpm() { return t.narrate ? t.speakWpm : t.wpm; },
+    get minWpm() { return t.narrate ? MIN_SPEAK_WPM : MIN_WPM; },
+    get maxWpm() { return t.narrate ? MAX_SPEAK_WPM : MAX_WPM; },
+    get narrate() { return t.narrate; },
+    narrator,
     setOn,
+    setNarrate,
+    setVoice,
+    toggleNarrate: () => setNarrate(!t.narrate),
     play,
     pause,
     togglePlay,
@@ -417,6 +578,6 @@ export function createTracker(host) {
     setWpm,
     /** Something moved the pages (a zoom); let a resting pill catch up. */
     refresh: () => { if (t.cursor) kick(); },
-    nudge: (dir) => setWpm(t.wpm + dir * WPM_STEP),
+    nudge: (dir) => setWpm((t.narrate ? t.speakWpm : t.wpm) + dir * WPM_STEP),
   };
 }

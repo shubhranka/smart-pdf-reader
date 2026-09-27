@@ -368,17 +368,27 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .tracker-play .icon-play { fill: currentColor; stroke: none; }
 .tracker-play .icon-pause, .tracker-play.playing .icon-play { display: none; }
 .tracker-play.playing .icon-pause { display: block; }
+.tracker-voice-pick {
+  font: inherit; font-size: 0.78rem; color: var(--text); background: var(--surface-2);
+  border: 0; border-radius: 7px; padding: 0.3rem 0.4rem; max-width: 9.5rem; cursor: pointer;
+}
+.tracker-voice-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Waiting on the voice: the speaker breathes until the sound starts. */
+.icon-btn.busy svg { animation: voice-busy 1.1s ease-in-out infinite; }
+@keyframes voice-busy { 50% { opacity: 0.35; } }
 .tracker-hint { font-size: 0.75rem; color: var(--text-dim); padding: 0 0.35rem; white-space: nowrap; }
 .tracker-speed { width: 120px; accent-color: var(--accent); }
 .tracker-wpm { font-size: 0.78rem; color: var(--text-dim); min-width: 5.2em; text-align: center; font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: reduce) {
   .tracker-bar { animation: none; }
+  .icon-btn.busy svg { animation: none; opacity: 0.6; }
 }
 @media (max-width: 640px) {
   .tracker-bar { left: 16px; right: 16px; bottom: 12px; transform: none; justify-content: space-between; }
   @keyframes tracker-bar-in { from { opacity: 0; } to { opacity: 1; } }
   .tracker-speed { flex: 1; min-width: 0; width: auto; }
   .tracker-hint { display: none; }
+  .tracker-voice-pick { display: none; }
 }
 
 /* ---------------------------- selection actions ---------------------------- */

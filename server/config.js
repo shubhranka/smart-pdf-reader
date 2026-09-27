@@ -45,4 +45,12 @@ export const OPENVERSE_API_BASE = process.env.OPENVERSE_API_BASE || 'https://api
 export const EXTRA_IMAGE_HOSTS = (process.env.EXTRA_IMAGE_HOSTS || '')
   .split(',').map((h) => h.trim()).filter(Boolean);
 
+// Read-aloud. Kokoro runs inside this process; its model (~90 MB) downloads on first use
+// and is kept in TTS_CACHE_DIR, deliberately apart from DATA_DIR. 'off' leaves reading
+// aloud to the browser's own voices; 'stub' answers with a tone, for the test suite.
+export const TTS_ENGINE = env('TTS_ENGINE', 'kokoro');
+export const TTS_VOICE = env('TTS_VOICE', 'af_heart');
+export const TTS_DTYPE = env('TTS_DTYPE', 'q8');
+export const TTS_CACHE_DIR = env('TTS_CACHE_DIR', path.join(ROOT, 'models'));
+
 for (const dir of [PDF_DIR, DATA_DIR]) fs.mkdirSync(dir, { recursive: true });

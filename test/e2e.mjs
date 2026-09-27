@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -188,6 +188,8 @@ const NO_PROVIDERS = {
   GROQ_API_KEY: '', GROQ_MODEL: '', GROQ_API_BASE: 'http://localhost:1',
   OPENROUTER_API_KEY: '', OPENROUTER_MODEL: '', OPENROUTER_API_BASE: 'http://localhost:1',
   NVIDIA_API_KEY: '', NVIDIA_MODEL: '', NVIDIA_API_BASE: 'http://localhost:1',
+  // Never load (or download) the real voice model; the stub answers with a tone.
+  TTS_ENGINE: 'stub',
 };
 
 const cleanup = async () => {
@@ -260,9 +262,118 @@ try {
     body: JSON.stringify({ page: 1, offsetPct: 0 }),
   });
 
+  /* ---- read aloud: what gets said ---- */
+  const { buildChunk } = await import(pathToFileURL(path.join(ROOT, 'public/speech-text.js')));
+  // Words laid out the way the tracker measures them. A line is a string, or
+  // { text, h, y } for a different size or place; "^12" is a raised footnote mark.
+  const layout = (lines, height = 800) => {
+    const words = [];
+    let y = 60;
+    lines.forEach((line, n) => {
+      const { text, h = 10, y: at } = typeof line === 'string' ? { text: line } : line;
+      if (at !== undefined) y = at;
+      let x = 50;
+      for (const token of text.split(' ')) {
+        const raised = token.startsWith('^');
+        const t = raised ? token.slice(1) : token;
+        const wh = raised ? h * 0.6 : h;
+        words.push({ x, y: raised ? y - h * 0.25 : y, w: t.length * wh * 0.5, h: wh, text: t, line: n });
+        x += t.length * wh * 0.5 + h * 0.3;
+      }
+      y += h * 1.25;
+    });
+    return { words, height };
+  };
+  const chunkOf = (pages, opts, from = { page: 1, i: 0 }) =>
+    buildChunk(async (n) => pages[n - 1] ?? null, from, opts);
+  const said = async (pages, opts) => (await chunkOf(pages, opts))?.text;
+
+  check('read aloud: "e.g." does not end a sentence',
+    await said([layout(['Plants make sugar, e.g. glucose, from light. Then more.'])])
+      === 'Plants make sugar, e.g. glucose, from light.');
+  const headed = [layout([{ text: 'Membrane Transport', h: 16 }, 'Cells move ions across membranes.'])];
+  const heading = await chunkOf(headed);
+  check('read aloud: a heading is said on its own, with a full stop', heading?.text === 'Membrane Transport.', heading?.text);
+  check('read aloud: and takes a longer pause after it', heading?.pauseAfter > 0.4);
+  check('read aloud: the paragraph follows the heading',
+    (await chunkOf(headed, {}, heading.next))?.text === 'Cells move ions across membranes.');
+  check('read aloud: footnote marks are not read out',
+    await said([layout(['Energy is stored ^3 as ATP in the cell.12'])]) === 'Energy is stored as ATP in the cell.',
+    await said([layout(['Energy is stored ^3 as ATP in the cell.12'])]));
+  const turned = await chunkOf([layout(['The pump moves', { text: '7', y: 770 }]), layout(['sodium out of the cell.'])]);
+  check('read aloud: a sentence runs on over the page turn, skipping the page number',
+    turned?.text === 'The pump moves sodium out of the cell.', turned?.text);
+  check('read aloud: each spoken word knows its page', turned?.words.at(-1).page === 2 && turned?.words.at(-1).i === 4);
+  check('read aloud: a word hyphenated over a line break is said whole',
+    await said([layout(['Most ATP comes from mito-', 'chondria in the cell.'])]) === 'Most ATP comes from mitochondria in the cell.'
+    && await said([layout(['Most ATP comes from mito\u2010', 'chondria in the cell.'])]) === 'Most ATP comes from mitochondria in the cell.');
+  for (const [cited, spoken] of [
+    ['As shown in [7, 8, 9].', 'As shown in.'],
+    ['As shown in [7,8,9].', 'As shown in.'],
+    ['As shown in [12].', 'As shown in.'],
+    ['As shown in [3–5].', 'As shown in.'],
+    ['As shown [7, 8], the pump works.', 'As shown, the pump works.'],
+    ['Found in membranes[4].', 'Found in membranes.'],
+    ['See pp. 3–5 of it.', 'See pp. 3 to 5 of it.'],
+  ]) {
+    const got = await said([layout([cited])]);
+    check(`read aloud: citations are skipped — ${cited}`, got === spoken, got);
+  }
+  check('read aloud: a dash between clauses is a pause',
+    await said([layout(['Pumps use energy – lots of it.'])]) === 'Pumps use energy, lots of it.');
+  const rambling = Array.from({ length: 50 }, (_, k) => (k === 19 ? `w${k},` : `w${k}`)).join(' ') + '.';
+  check('read aloud: a very long sentence is split at a comma',
+    (await said([layout([rambling])]))?.endsWith('w19,'));
+  check('read aloud: the first chunk stops at an early comma, so the voice starts sooner',
+    await said([layout(['One two three four five six seven, eight nine ten.'])], { maxWords: 18, softWords: 6 })
+      === 'One two three four five six seven,');
+
+  /* ---- read aloud: the voice API ---- */
+  const speechStatus = await (await fetch(`${BASE}/api/speech/status`)).json();
+  check('speech status names the stub engine, ready, with voices',
+    speechStatus.engine === 'stub' && speechStatus.state === 'ready' && speechStatus.voices.length > 1,
+    JSON.stringify(speechStatus).slice(0, 80));
+  const speechPost = (body) => fetch(`${BASE}/api/speech`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+  check('speech refuses empty text', (await speechPost({ text: '  ' })).status === 400);
+  check('speech refuses too much text at once', (await speechPost({ text: 'word '.repeat(200) })).status === 400);
+  check('speech refuses an unknown voice', (await speechPost({ text: 'Hello.', voice: 'nobody' })).status === 400);
+  const shortWav = await speechPost({ text: 'Hello there.' });
+  const longWav = await speechPost({ text: 'Hello there, this is a much longer sentence to read.' });
+  const shortBytes = (await shortWav.arrayBuffer()).byteLength;
+  const longBytes = (await longWav.arrayBuffer()).byteLength;
+  check('speech answers with a WAV', shortWav.headers.get('content-type')?.startsWith('audio/wav'));
+  check('longer text makes longer audio', longBytes > shortBytes, `${shortBytes} < ${longBytes}`);
+
   /* ---- the reader itself ---- */
-  browser = await chromium.launch({ executablePath: CHROME, headless: true });
+  browser = await chromium.launch({
+    executablePath: CHROME, headless: true,
+    args: ['--mute-audio', '--autoplay-policy=no-user-gesture-required'],
+  });
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  // A stand-in voice: headless Chrome has none, and a test shouldn't talk anyway. It
+  // "says" one word every 80ms, reporting each one the way a local voice does.
+  await page.addInitScript(() => {
+    const log = { spoken: [], cancels: 0 };
+    let timers = [];
+    window.__speech = log;
+    Object.defineProperty(window, 'speechSynthesis', {
+      configurable: true,
+      value: {
+        getVoices: () => [],
+        addEventListener() {},
+        cancel() { log.cancels++; timers.forEach(clearTimeout); timers = []; },
+        speak(u) {
+          log.spoken.push(u.text);
+          const at = [...u.text.matchAll(/\S+/g)].map((m) => m.index);
+          timers.push(setTimeout(() => u.onstart?.({}), 0));
+          at.forEach((charIndex, k) => timers.push(setTimeout(() => u.onboundary?.({ name: 'word', charIndex }), 80 * k)));
+          timers.push(setTimeout(() => u.onend?.({}), 80 * at.length));
+        },
+      },
+    });
+  });
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(String(e)));
 
@@ -314,10 +425,90 @@ try {
     await page.evaluate(() => Number(localStorage.getItem('spr:tracker-wpm'))) === wpmBefore + 25);
   await page.keyboard.press(' ');
   check('space pauses the tracker', await page.locator('#tracker-play.playing').count() === 0);
+
+  // Read aloud with the natural voice (the stub engine answers with a tone).
+  const speechPosts = [];
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && new URL(r.url()).pathname === '/api/speech') speechPosts.push(r.postDataJSON());
+  });
+  const until = async (fn, ms = 5000) => {
+    for (const end = Date.now() + ms; Date.now() < end; await page.waitForTimeout(50)) if (await fn()) return true;
+    return false;
+  };
+  const trackerWpmBefore = await page.evaluate(() => localStorage.getItem('spr:tracker-wpm'));
+  await page.keyboard.press('v');
+  check('v turns reading aloud on and remembers it',
+    await page.locator('#tracker-voice.active[aria-pressed="true"]').count() === 1
+    && await page.evaluate(() => localStorage.getItem('spr:tracker-narrate')) === '1');
+  check('the slider becomes the speaking speed',
+    await page.evaluate(() => { const s = document.getElementById('tracker-speed'); return s.value === '175' && s.max === '325'; }));
+  check('turning reading aloud on while paused says nothing', speechPosts.length === 0);
+  await page.keyboard.press(' ');
+  check('play asks the server to say the first sentence', await until(() => speechPosts.length > 0), speechPosts[0]?.text);
+  const firstText = speechPosts[0]?.text ?? '';
+  check('the first chunk is short, so the voice starts quickly', firstText.split(' ').length <= 18, firstText);
+  check('it is said at the speaking pace', Math.abs((speechPosts[0]?.speed ?? 0) - 175 / 165) < 0.01);
+  check('the voice picker shows, with the server\'s voices',
+    await page.locator('#tracker-voice-pick').isVisible()
+    && await page.locator('#tracker-voice-pick option').count() === speechStatus.voices.length);
+  await until(async () => !(await page.locator('#tracker-voice.busy').count()), 3000);
+  const voiceFrom = await markerAt();
+  await page.waitForTimeout(900);
+  check('the pill follows the voice', voiceFrom !== await markerAt());
+  check('the next sentence is fetched while this one plays', await until(() => speechPosts.length > 1));
+
+  await page.keyboard.press(' ');
+  check('space pauses reading aloud', await page.locator('#tracker-play.playing').count() === 0);
+  await page.waitForTimeout(700);
+  const restAt = await markerAt();
+  const postsWhilePaused = speechPosts.length;
+  await page.waitForTimeout(500);
+  check('the pill rests while paused', restAt === await markerAt());
+  check('nothing more is fetched while paused', speechPosts.length === postsWhilePaused);
+  await page.keyboard.press(' ');
+  await page.waitForTimeout(600);
+  check('resuming says the interrupted sentence again, without fetching it anew',
+    speechPosts.filter((p) => p.text === firstText).length === 1);
+
+  await page.locator('#tracker-voice-pick').selectOption('bf_emma');
+  check('picking a voice switches to it straight away',
+    await until(() => speechPosts.some((p) => p.voice === 'bf_emma'), 1500));
+  check('the voice is remembered', await page.evaluate(() => localStorage.getItem('spr:tracker-voice')) === 'bf_emma');
+
+  await page.keyboard.press(']');
+  check('] changes the speaking speed, not the reading speed',
+    await page.evaluate(() => localStorage.getItem('spr:tracker-narrate-wpm')) === '200'
+    && await page.evaluate(() => localStorage.getItem('spr:tracker-wpm')) === trackerWpmBefore);
+  check('the next sentence is fetched again at the new pace',
+    await until(() => speechPosts.some((p) => Math.abs(p.speed - 200 / 165) < 0.01)));
+  await page.keyboard.press(' ');
+
+  // With no voice on the server, the browser's own voice reads instead.
+  const offStatus = { engine: 'off', state: 'off', progress: 0, error: '', voices: [], defaultVoice: '' };
+  await page.route('**/api/speech/status', (route) => route.fulfill({ json: offStatus }));
+  await page.keyboard.press('v');
+  await page.keyboard.press('v');
+  await page.keyboard.press(' ');
+  check('without a server voice, the system voice reads',
+    await until(() => page.evaluate(() => window.__speech.spoken.length > 0)));
+  check('the voice picker hides for the system voice', !(await page.locator('#tracker-voice-pick').isVisible()));
+  const systemFrom = await markerAt();
+  await page.waitForTimeout(700);
+  check('the pill follows the system voice too', systemFrom !== await markerAt());
+  const cancelsBefore = await page.evaluate(() => window.__speech.cancels);
+  await page.keyboard.press(' ');
+  check('pausing silences the system voice', await page.evaluate(() => window.__speech.cancels) > cancelsBefore);
+  await page.unroute('**/api/speech/status');
+  await page.click('#tracker-voice');
+  check('the button turns reading aloud off',
+    await page.locator('#tracker-voice.active').count() === 0
+    && await page.evaluate(() => localStorage.getItem('spr:tracker-narrate')) === '0');
   await page.keyboard.press('Escape');
   check('escape turns the tracker off, not the document',
     !(await page.locator('#tracker-bar').isVisible()) && await page.locator('#reader:not([hidden])').count() === 1);
-  await page.evaluate(() => localStorage.removeItem('spr:tracker-wpm'));
+  await page.evaluate(() => {
+    for (const k of ['spr:tracker-wpm', 'spr:tracker-narrate', 'spr:tracker-narrate-wpm', 'spr:tracker-voice']) localStorage.removeItem(k);
+  });
   await page.evaluate((top) => { document.getElementById('viewer-container').scrollTop = top; }, scrollBefore);
 
   /* scroll -> indicator -> saved progress */

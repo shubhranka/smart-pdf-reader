@@ -1,7 +1,7 @@
 import * as pdfjsLib from '/vendor/pdfjs/build/pdf.mjs';
 import { api, fileUrl, getDocument } from './api.js';
 import { renderDiagram } from './diagram.js';
-import { createTracker, MIN_WPM, MAX_WPM, WPM_STEP } from './tracker.js';
+import { createTracker, WPM_STEP } from './tracker.js';
 import { renderMindmap } from './mindmap.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/build/pdf.worker.mjs';
@@ -76,6 +76,8 @@ const el = {
   trackerMarker: document.getElementById('tracker-marker'),
   trackerBar: document.getElementById('tracker-bar'),
   trackerPlay: document.getElementById('tracker-play'),
+  trackerVoice: document.getElementById('tracker-voice'),
+  trackerVoicePick: document.getElementById('tracker-voice-pick'),
   trackerSlower: document.getElementById('tracker-slower'),
   trackerFaster: document.getElementById('tracker-faster'),
   trackerSpeed: document.getElementById('tracker-speed'),
@@ -1223,11 +1225,37 @@ function syncTrackerUi() {
   el.trackerPlay.classList.toggle('playing', tracker.playing);
   el.trackerPlay.setAttribute('aria-label', tracker.playing ? 'Pause tracker' : 'Start tracker');
   el.trackerPlay.title = tracker.playing ? 'Pause (space)' : 'Play (space)';
-  el.trackerHint.hidden = tracker.started;
+
+  // Reading aloud: the button, what the voice is up to, and which voice.
+  const voice = tracker.narrator;
+  const aloud = tracker.narrate;
+  el.trackerVoice.hidden = !voice.available;
+  el.trackerVoice.classList.toggle('active', aloud);
+  el.trackerVoice.classList.toggle('busy', aloud && tracker.playing && (voice.loading || voice.busy));
+  el.trackerVoice.setAttribute('aria-pressed', String(aloud));
+  el.trackerVoice.title = aloud ? 'Stop reading aloud (v)' : 'Read aloud (v)';
+  const note = !aloud ? ''
+    : voice.loading ? `Preparing natural voice… ${voice.progress}%`
+    : voice.notice;
+  el.trackerHint.textContent = note || 'Click a word to start';
+  el.trackerHint.hidden = !note && tracker.started;
+  const pick = el.trackerVoicePick;
+  pick.hidden = !aloud || voice.voices.length < 2;
+  if (!pick.hidden) {
+    if (pick.options.length !== voice.voices.length) {
+      pick.replaceChildren(...voice.voices.map((v) => new Option(v.label, v.id)));
+    }
+    pick.value = voice.voice;
+  }
+
+  // The slider is the speaking pace while reading aloud, the tracking pace otherwise.
+  el.trackerSpeed.min = String(tracker.minWpm);
+  el.trackerSpeed.max = String(tracker.maxWpm);
   el.trackerSpeed.value = String(tracker.wpm);
+  el.trackerSpeed.setAttribute('aria-label', aloud ? 'Speaking speed, words per minute' : 'Reading speed, words per minute');
   el.trackerWpm.textContent = `${tracker.wpm} wpm`;
-  el.trackerSlower.disabled = tracker.wpm <= MIN_WPM;
-  el.trackerFaster.disabled = tracker.wpm >= MAX_WPM;
+  el.trackerSlower.disabled = tracker.wpm <= tracker.minWpm;
+  el.trackerFaster.disabled = tracker.wpm >= tracker.maxWpm;
 }
 
 /** Fraction of the way down its page that an entry's heading sits. */
@@ -1426,13 +1454,16 @@ export function initReader(exitHandler) {
     readingLine: () => locate(),
     onChange: syncTrackerUi,
   });
-  el.trackerSpeed.min = String(MIN_WPM);
-  el.trackerSpeed.max = String(MAX_WPM);
   el.trackerSpeed.step = String(WPM_STEP);
   syncTrackerUi();
   el.trackerBtn.addEventListener('click', () => state && tracker.setOn(!tracker.on));
   el.trackerClose.addEventListener('click', () => tracker.setOn(false));
   el.trackerPlay.addEventListener('click', () => tracker.togglePlay());
+  el.trackerVoice.addEventListener('click', () => tracker.toggleNarrate());
+  el.trackerVoicePick.addEventListener('change', () => {
+    tracker.setVoice(el.trackerVoicePick.value);
+    el.trackerVoicePick.blur(); // so Space goes back to meaning play/pause
+  });
   el.trackerSlower.addEventListener('click', () => tracker.nudge(-1));
   el.trackerFaster.addEventListener('click', () => tracker.nudge(1));
   el.trackerSpeed.addEventListener('input', () => tracker.setWpm(Number(el.trackerSpeed.value)));
@@ -1618,11 +1649,12 @@ export function initReader(exitHandler) {
       if (tracker.on) return void tracker.setOn(false);
       onExit();
     }
-    if (e.target.closest?.('input, textarea')) return;
+    if (e.target.closest?.('input, textarea, select')) return;
     const plain = !e.metaKey && !e.ctrlKey && !e.altKey;
     if ((e.key === 't' || e.key === 'T') && plain && !e.repeat) tracker.setOn(!tracker.on);
     if (tracker.on && plain) {
       if (e.key === ' ') { e.preventDefault(); if (!e.repeat) tracker.togglePlay(); return; }
+      if ((e.key === 'v' || e.key === 'V') && !e.repeat) tracker.toggleNarrate();
       if (e.key === '[') tracker.nudge(-1);
       if (e.key === ']') tracker.nudge(1);
       // Scrolling by keyboard is the reader taking over, same as the wheel.

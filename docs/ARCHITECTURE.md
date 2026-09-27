@@ -11,6 +11,9 @@ public/            the browser side, no build step
   reader.js          PDF.js viewer, scroll tracking, selection, panels
   diagram.js         lays out and sketches a recap's diagram with rough.js; shared sketch helpers
   mindmap.js         lays out and sketches a passage's mind map with rough.js
+  tracker.js         the reading tracker: word geometry, springs, pacing, read-aloud loop
+  speech-text.js     what a voice should say for a page: sentences, headings, skipped marks
+  narrator.js        the voices: Kokoro via /api/speech, or the browser's speechSynthesis
   api.js             fetch wrappers
 
 server/
@@ -32,6 +35,7 @@ server/
     recap.js         recap prompts, one call vs map-reduce, chunk cache
     mindmap.js       mind map prompt, schema, tree clean-up and cache
     images.js        picture search and the image proxy's host list
+    speech.js        read-aloud: lazy Kokoro model, one-at-a-time queue, test stub
   pdf/
     pagetext.js      server-side page text, cached per page, and the line cut
     pdfinfo.js       page count and title, read server-side on upload
@@ -40,6 +44,21 @@ test/e2e.mjs       drives the real UI in Chrome against a stub Gemini
 ```
 
 ## Details worth knowing
+
+- **Reading aloud runs Kokoro in the server process, and it sends no word timings.**
+  `kokoro-js` is imported lazily on the first `/api/speech/load`, so a reader who never presses
+  the speaker pays nothing, and the model (~90 MB) is kept in `models/`, apart from `data/`.
+  Generation runs one job at a time, since ONNX already uses every core, and a job whose
+  request was aborted is skipped. The pill still follows each word: `narrator.js` scans the
+  clip for where speech starts and stops and for its silent gaps, splits the sentence at its
+  commas into clauses matched to the longest gaps, and spreads each clause's words over its
+  stretch of sound by letter count. The clip's own lead-in and tail are trimmed so the pause
+  between chunks is chosen, not accidental. Chunks come from `speech-text.js` — a sentence,
+  or a heading on its own (spotted by a change of type size or a big step down, and given a
+  full stop so it is said like one), crossing page turns — and three are fetched ahead,
+  because generation is about 0.45× real time and a long sentence after a short heading would
+  otherwise leave a gap. `TTS_ENGINE=stub` answers with a tone shaped like speech, which is
+  what the test suite uses.
 
 - **Page text is extracted on the server, not taken from the browser.** The viewer only
   captures text for pages it has actually drawn, so everything you scrolled past — and any

@@ -19,8 +19,9 @@
 
 Reading something hard is easier when you don't have to leave the page. Highlight a word you
 don't know and get its meaning, plus what it means *in this book*. Come back after a week away and
-ask for a recap of everything so far. Stuck on a dense section? Turn it into a mind map. Close
-the tab mid-chapter and it opens right where you were.
+ask for a recap of everything so far. Stuck on a dense section? Turn it into a mind map. Tired
+eyes? Let it read to you while a highlight follows along. Close the tab mid-chapter and it opens
+right where you were.
 
 Everything runs on your own machine. Your PDFs and reading history never go anywhere except the
 AI model you choose, and only the text you ask about.
@@ -104,6 +105,28 @@ for you so the line you're on stays in the same spot on screen.
 
 If your system is set to reduce motion, the bounce is turned off.
 
+### 🔊 Listen along
+
+With the tracker on, press the speaker button (or `v`) and a natural-sounding voice reads the
+page aloud. The highlight follows the voice word by word, and a sentence runs straight on
+over the page turn.
+
+- **It reads what you'd read out loud.** Page numbers, footnote marks and citations like
+  `[7, 8, 9]` are skipped. Headings get a pause of their own instead of running into the paragraph.
+  Words hyphenated at the end of a line are said whole.
+- **It speaks at a speaking pace.** Reading aloud has its own speed, 175 words per minute to
+  start, from 100 to 325. While it's reading, the slider and `[` `]` change the voice, not your
+  silent-reading speed.
+- **Pick a voice.** A menu in the tracker bar offers seven, American and British. Your choice is
+  remembered.
+- **Pause, and it picks up the sentence again.** `Space` stops it mid-sentence. Press it again and
+  the voice starts that sentence over, with no wait.
+
+The voice is [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M), a small open model that runs on
+your own machine. Nothing you read is sent anywhere for it, and it costs nothing. The first time
+you use it, it downloads once (about 90 MB, into `models/`) while the tracker bar shows its
+progress. After that it works offline. If it can't load, your system's own voice reads instead.
+
 ### 🌙 Easy on the eyes at night
 
 The app follows your system's light or dark mode. The moon button also darkens the pages
@@ -143,6 +166,10 @@ PORT=3210
 Drop a PDF onto the page and start reading. The reader also works with no key at all. You just
 get a friendly note instead of an explanation.
 
+Reading aloud needs no key. `npm install` brings in the voice engine, a few hundred MB in
+`node_modules`, and the voice model downloads the first time you press the speaker button. To
+leave it to your browser's voices instead, set `TTS_ENGINE=off` in `.env`.
+
 ### Using a different AI provider
 
 Set that provider's key instead of, or as well as, Gemini's. `LLM_PROVIDER` chooses between them.
@@ -165,7 +192,8 @@ Override any model with `GEMINI_MODEL`, `MISTRAL_MODEL`, `GROQ_MODEL`, `OPENROUT
 `NVIDIA_MODEL`. `NVIDIA_API_BASE` points at a NIM you host yourself. On OpenRouter, choose a model
 that [supports structured outputs](https://openrouter.ai/models?supported_parameters=structured_outputs).
 [`.env.example`](.env.example) lists good alternatives for each provider, plus the recap
-size settings.
+size settings and the read-aloud ones (engine, starting voice, model precision, where the model
+is kept).
 
 ## ⌨️ Handy controls
 
@@ -178,7 +206,8 @@ size settings.
 | 🌙 **Moon button** | Dark pages |
 | 🎯 **Tracker button** or `t` | Turn the reading tracker on, then click a word to start |
 | `Space` | Play or pause the tracker (while it's on) |
-| `[` `]` | Tracker slower or faster |
+| `[` `]` | Tracker slower or faster, or the voice while it's reading aloud |
+| 🔊 **Speaker button** or `v` | Read aloud along with the tracker; pick a voice from the menu beside it |
 | `f` | Full screen |
 | `←` `→` or type a page number | Jump around |
 | **Pinch** on the trackpad | Zoom the PDF |
@@ -192,6 +221,9 @@ size settings.
 - **The AI model** only receives the text you highlight or map, the page around it, or the range
   you ask to recap. Gemini calls send `store: false`. OpenRouter is told to use only upstream
   providers that don't keep prompts.
+- **Reading aloud happens on your machine.** The voice model is kept in `models/`, and the text it
+  reads never leaves your computer. Your speeds, voice and on/off choice are saved in the
+  browser.
 - **Pictures are fetched by the server** and passed on to your browser, so image sites never see
   what you're reading.
 
@@ -203,19 +235,21 @@ npm test
 
 This starts the app against a throwaway folder and a fake AI, then drives the real interface in
 headless Chrome: upload, resume, highlight-to-explain, mind maps, recaps, history, zoom, the
-reading tracker and more. It never touches your library and makes no network calls. It needs
+reading tracker, reading aloud and more. A stand-in voice answers with a muted tone, so the voice
+model is never loaded. It never touches your library and makes no network calls. It needs
 Google Chrome, or set `CHROME_PATH`.
 
 ## 🛠️ Under the hood
 
 Plain Express on the server and plain JavaScript in the browser, with no build step.
 [PDF.js](https://mozilla.github.io/pdf.js/) renders the pages, [rough.js](https://roughjs.com/)
-sketches the diagrams and mind maps, and `node:sqlite` stores everything.
+sketches the diagrams and mind maps, [kokoro-js](https://www.npmjs.com/package/kokoro-js)
+reads aloud, and `node:sqlite` stores everything.
 
 Curious how it works, or want to add a feature? **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
 walks through the code layout and the non-obvious decisions: lazy rendering, how recaps reuse
-work, why diagrams and mind maps are never drawn by the model, and how each AI provider is
-handled.
+work, why diagrams and mind maps are never drawn by the model, how each AI provider is
+handled, and how the highlight keeps time with a voice that never says where it is.
 
 ## 🌱 Ideas for next
 
