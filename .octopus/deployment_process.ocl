@@ -1,11 +1,17 @@
-step "deploy-a-release" {
-    name = "Deploy a Release"
+step "run-a-script" {
+    name = "Run a Script"
+    properties = {
+        Octopus.Action.TargetRoles = "asdf"
+    }
 
     action {
-        action_type = "Octopus.DeployRelease"
+        action_type = "Octopus.Script"
         properties = {
-            Octopus.Action.DeployRelease.DeploymentCondition = "Always"
-            Octopus.Action.DeployRelease.ProjectId = "smart-pdf-reader"
+            Octopus.Action.RunOnServer = "false"
+            Octopus.Action.Script.ScriptBody = "echo \"Hello\""
+            Octopus.Action.Script.ScriptSource = "Inline"
+            Octopus.Action.Script.Syntax = "PowerShell"
         }
+        worker_pool_variable = ""
     }
 }
