@@ -19,6 +19,7 @@ public/            the browser side, no build step
 server/
   index.js           Express routes
   config.js          env and paths; env() is how provider modules read their settings
+  auth.js            optional Google sign-in (AUTH=google): its routes, sessions and the gate
   db.js              SQLite schema and queries (node:sqlite, no native build)
   errors.js          ExplainError, turned into { error, hint } by the route handler
   llm/
@@ -40,10 +41,30 @@ server/
     pagetext.js      server-side page text, cached per page, and the line cut
     pdfinfo.js       page count and title, read server-side on upload
 
-test/e2e.mjs       drives the real UI in Chrome against a stub Gemini
+deploy/            the systemd service and Caddyfile that docs/DEPLOY.md sets up
+
+test/e2e.mjs       drives the real UI in Chrome against a stub Gemini (and a stub Google)
 ```
 
 ## Details worth knowing
+
+- **Sign-in is one gate in front of everything, and off by default.** `useAuth()` in `auth.js`
+  is mounted before every other route, so with `AUTH=google` the API, the PDF files and the
+  scripts all answer only a signed-in address that is still in `ALLOWED_EMAILS`. The stylesheet
+  alone is let through, for the sign-in page. With `AUTH=off` it mounts nothing, and `/api/me`
+  answers `null`, which is how the library knows to hide its "Sign out" line. The flow is
+  Google's authorization code with PKCE, written out by hand: a short-lived cookie scoped to
+  `/auth` carries the `state`, which ties Google's answer to the browser that asked, and the PKCE
+  verifier, which ties the code to that one request. The ID token comes straight from Google's
+  token endpoint, so its claims (issuer, audience, expiry, `email_verified`) are checked but its
+  signature need not be. A session is a random token in an HttpOnly, SameSite=Lax cookie; only
+  its SHA-256 is stored, in `sessions`. The allow-list is checked on every request, not just at
+  sign-in, so removing an address takes effect at the next restart. `PUBLIC_URL` is configured
+  rather than read from the `Host` header, so a forged header can't steer the redirect. The server
+  refuses to start with `AUTH=google` and a setting missing, or a non-localhost `PUBLIC_URL`
+  that isn't https, and `deploy/smart-pdf-reader.service` sets `AUTH=google` itself (process
+  env wins over `.env`), so a server can't come up open. `HOST` defaults to `127.0.0.1`, which
+  leaves Caddy on the same machine as the only way in.
 
 - **Reading aloud runs Kokoro in the server process, and it sends no word timings.**
   `kokoro-js` is imported lazily on the first `/api/speech/load`, so a reader who never presses

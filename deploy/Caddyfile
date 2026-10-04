@@ -1,0 +1,9 @@
+# Caddy puts the reader on the internet over HTTPS. It fetches and renews a free
+# certificate from Let's Encrypt by itself, so there is nothing else to set up.
+#
+# Replace yourname.duckdns.org with your own address (the same one as PUBLIC_URL in
+# .env), copy this to /etc/caddy/Caddyfile, then: sudo systemctl reload caddy
+
+yourname.duckdns.org {
+	reverse_proxy 127.0.0.1:3210
+}

@@ -9,6 +9,7 @@
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
 import http from 'node:http';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
@@ -34,6 +35,11 @@ const calls = [];          // every model call, so the map-reduce passes can be 
 const imageCalls = [];
 const thinkingLevels = [];
 const providerCalls = []; // requests that reached the chat-completions stubs
+// Google sign-in: who the next person to sign in turns out to be, and what was asked.
+let googleUser = {};
+const googleAuthRequests = [];
+const googleTokenRequests = [];
+const googleCodes = new Map(); // one-time code -> the PKCE challenge it was issued for
 // smallest valid PNG
 const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
@@ -48,6 +54,46 @@ const stub = http.createServer((req, res) => {
     if (url.pathname === '/img/diagram.png') {
       res.writeHead(200, { 'content-type': 'image/png' });
       return res.end(PNG);
+    }
+
+    // --- Google sign-in: consent is instant, and the account is whoever googleUser says ---
+    if (url.pathname === '/o/oauth2/v2/auth') {
+      const asked = Object.fromEntries(url.searchParams);
+      googleAuthRequests.push(asked);
+      const back = new URL(asked.redirect_uri);
+      if (googleUser.deny) {
+        back.searchParams.set('error', 'access_denied');
+      } else {
+        const code = `code-${googleAuthRequests.length}`;
+        googleCodes.set(code, asked.code_challenge);
+        back.searchParams.set('code', code);
+      }
+      back.searchParams.set('state', asked.state);
+      res.writeHead(302, { location: back.href });
+      return res.end();
+    }
+    if (url.pathname === '/token') {
+      const form = Object.fromEntries(new URLSearchParams(raw));
+      googleTokenRequests.push(form);
+      // Like Google: a code works once, and only with the verifier its challenge came from.
+      const challenge = googleCodes.get(form.code);
+      googleCodes.delete(form.code);
+      const verifier = crypto.createHash('sha256').update(form.code_verifier ?? '').digest('base64url');
+      if (!challenge || verifier !== challenge) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'invalid_grant' }));
+      }
+      const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+      const claims = {
+        iss: 'https://accounts.google.com', aud: googleUser.aud ?? form.client_id, sub: '1',
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        email: googleUser.email, email_verified: googleUser.verified ?? true,
+      };
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({
+        access_token: 'stub-access', token_type: 'Bearer', expires_in: 3600,
+        id_token: `${b64({ alg: 'RS256', typ: 'JWT' })}.${b64(claims)}.stub-signature`,
+      }));
     }
     // --- Wikipedia article summary ---
     if (url.pathname.startsWith('/api/rest_v1/page/summary/')) {
@@ -177,7 +223,7 @@ const CHUNK_ANSWER = {
 };
 
 const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'spr-test-'));
-let server, browser, altServer;
+let server, browser, altServer, authServer;
 
 // The server loads the real .env, which may name a provider and hold real keys. Pin
 // every provider setting here so no test run can reach a live API or spend quota.
@@ -190,12 +236,16 @@ const NO_PROVIDERS = {
   NVIDIA_API_KEY: '', NVIDIA_MODEL: '', NVIDIA_API_BASE: 'http://localhost:1',
   // Never load (or download) the real voice model; the stub answers with a tone.
   TTS_ENGINE: 'stub',
+  // Sign-in stays off unless a test turns it on, and never reaches the real Google.
+  AUTH: 'off', GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', ALLOWED_EMAILS: '', PUBLIC_URL: '',
+  GOOGLE_AUTH_URL: 'http://localhost:1', GOOGLE_TOKEN_URL: 'http://localhost:1',
 };
 
 const cleanup = async () => {
   await browser?.close().catch(() => {});
   server?.kill();
   altServer?.kill();
+  authServer?.kill();
   stub.close();
   await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
 };
@@ -1460,6 +1510,144 @@ try {
     altServer.kill();
     altServer = null;
   }
+
+  /* ---- sign-in: off by default; with AUTH=google nothing answers until you are on the list ---- */
+  check('sign-in is off by default: no one is named', (await (await fetch(`${BASE}/api/me`)).json()).email === null);
+  check('sign-in is off by default: there is no sign-in page', (await fetch(`${BASE}/auth/login`)).status === 404);
+
+  const authPort = STUB_PORT + 2;
+  const AUTH_BASE = `http://localhost:${authPort}`;
+  const serverEnv = (name, extra) => ({
+    ...process.env, ...NO_PROVIDERS, PORT: String(authPort),
+    DATA_DIR: path.join(tmp, `data-${name}`), PDF_DIR: path.join(tmp, `pdfs-${name}`), ...extra,
+  });
+  const SIGN_IN = {
+    AUTH: 'google',
+    GOOGLE_CLIENT_ID: 'test-client.apps.googleusercontent.com',
+    GOOGLE_CLIENT_SECRET: 'test-secret',
+    ALLOWED_EMAILS: ' Reader@Example.com , friend@example.com',
+    PUBLIC_URL: AUTH_BASE,
+    GOOGLE_AUTH_URL: `http://localhost:${STUB_PORT}/o/oauth2/v2/auth`,
+    GOOGLE_TOKEN_URL: `http://localhost:${STUB_PORT}/token`,
+  };
+
+  // A server that ought to refuse to start: its exit code and what it said on the way out.
+  const refusal = (extra) => new Promise((resolve) => {
+    const child = spawn(process.execPath, [path.join(ROOT, 'server/index.js')], {
+      cwd: ROOT, env: serverEnv('refused', extra), stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let said = '';
+    child.stderr.on('data', (c) => (said += c));
+    const timer = setTimeout(() => child.kill(), 5000);
+    child.on('exit', (code) => { clearTimeout(timer); resolve({ code, said }); });
+  });
+  const reason = (r) => r.said.split('\n').find((l) => l.startsWith('Error')) ?? `exit ${r.code}`;
+
+  const unset = await refusal({ AUTH: 'google' });
+  check('AUTH=google without its settings refuses to start', unset.code === 1
+    && unset.said.includes('AUTH=google needs GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, ALLOWED_EMAILS'), reason(unset));
+  const plainHttp = await refusal({ ...SIGN_IN, PUBLIC_URL: 'http://reader.example.com' });
+  check('a public address over plain http is refused', plainHttp.code === 1
+    && plainHttp.said.includes('PUBLIC_URL must start with https://'), reason(plainHttp));
+  const typo = await refusal({ AUTH: 'yes' });
+  check('an unknown AUTH value is refused', typo.code === 1 && typo.said.includes('Unknown AUTH "yes"'), reason(typo));
+
+  authServer = spawn(process.execPath, [path.join(ROOT, 'server/index.js')], {
+    cwd: ROOT, env: serverEnv('auth', SIGN_IN), stdio: 'ignore',
+  });
+  for (let i = 0; i < 100; i++) {
+    try { if ((await fetch(`${AUTH_BASE}/auth/login`)).ok) break; } catch { /* not up yet */ }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+
+  const lockedApi = await fetch(`${AUTH_BASE}/api/documents`);
+  check('signed out: the API answers 401', lockedApi.status === 401
+    && (await lockedApi.json()).error === 'Sign in to continue.');
+  check('signed out: a PDF cannot be fetched by its address',
+    (await fetch(`${AUTH_BASE}/api/documents/${doc.id}/file`)).status === 401);
+  check('signed out: health is behind sign-in too', (await fetch(`${AUTH_BASE}/api/health`)).status === 401);
+  const lockedPage = await fetch(`${AUTH_BASE}/`, { redirect: 'manual' });
+  check('signed out: opening the app sends you to sign in',
+    lockedPage.status === 303 && lockedPage.headers.get('location') === '/auth/login');
+  check('signed out: the scripts are not served', (await fetch(`${AUTH_BASE}/app.js`, { redirect: 'manual' })).status === 303);
+  check('signed out: the stylesheet is, for the sign-in page', (await fetch(`${AUTH_BASE}/styles.css`)).ok);
+  const sneakUpload = await fetch(`${AUTH_BASE}/api/documents`, { method: 'POST', body: form });
+  check('signed out: an upload is turned away before anything is written',
+    sneakUpload.status === 401 && fs.readdirSync(path.join(tmp, 'pdfs-auth')).length === 0);
+
+  const authCtx = await browser.newContext({ viewport: { width: 1100, height: 800 } });
+  const authPage = await authCtx.newPage();
+  const authErrors = [];
+  authPage.on('pageerror', (e) => authErrors.push(String(e)));
+  const sessionCookie = async () => (await authCtx.cookies()).find((c) => c.name === 'spr_session');
+
+  googleUser = { email: 'READER@example.com' };
+  await authPage.goto(`${AUTH_BASE}/`);
+  check('a signed-out visitor sees the sign-in page',
+    authPage.url() === `${AUTH_BASE}/auth/login` && await authPage.isVisible('.signin-btn'), authPage.url());
+
+  await authPage.click('.signin-btn');
+  await authPage.waitForSelector('#account:not([hidden])', { timeout: 5000 }).catch(() => {});
+  check('signing in with an address on the list opens the library',
+    authPage.url() === `${AUTH_BASE}/` && await authPage.isVisible('#dropzone'), authPage.url());
+  check('the list ignores case and spaces, and the library says who is signed in',
+    (await authPage.textContent('#account-email')) === 'reader@example.com');
+
+  const asked = googleAuthRequests.at(-1);
+  const traded = googleTokenRequests.at(-1);
+  check('asks Google for a code and the email address, nothing more', asked?.response_type === 'code'
+    && asked.scope === 'openid email' && asked.client_id === SIGN_IN.GOOGLE_CLIENT_ID);
+  check('Google is sent back to PUBLIC_URL', asked?.redirect_uri === `${AUTH_BASE}/auth/callback`, asked?.redirect_uri);
+  check('the code is traded with PKCE and the client secret', asked?.code_challenge_method === 'S256'
+    && traded?.client_secret === 'test-secret' && traded.grant_type === 'authorization_code'
+    && crypto.createHash('sha256').update(traded.code_verifier ?? '').digest('base64url') === asked.code_challenge);
+
+  const session = await sessionCookie();
+  check('the session cookie is out of reach of page scripts', session?.httpOnly === true && session.sameSite === 'Lax');
+  check('the one-time sign-in cookie is cleared', !(await authCtx.cookies()).some((c) => c.name === 'spr_oauth'));
+  check('signed in: the API answers', (await authPage.request.get(`${AUTH_BASE}/api/documents`)).ok());
+
+  await authPage.click('#sign-out');
+  await authPage.waitForSelector('.signin-msg', { timeout: 5000 }).catch(() => {});
+  check('signing out lands on the sign-in page and says so',
+    (await authPage.textContent('.signin-msg').catch(() => ''))?.includes('signed out'), authPage.url());
+  check('signing out ends the session on the server, not just in this browser',
+    (await fetch(`${AUTH_BASE}/api/documents`, { headers: { cookie: `spr_session=${session?.value}` } })).status === 401);
+
+  // A session that ends while the app is open sends the next request to sign in.
+  await authPage.click('.signin-btn');
+  await authPage.waitForSelector('#account:not([hidden])', { timeout: 5000 }).catch(() => {});
+  await authCtx.clearCookies();
+  await authPage.evaluate(() => import('/api.js').then((m) => m.api.listDocuments()).catch(() => {}));
+  await authPage.waitForURL(`${AUTH_BASE}/auth/login`, { timeout: 5000 }).catch(() => {});
+  check('a session that ends mid-read goes back to sign in', authPage.url() === `${AUTH_BASE}/auth/login`, authPage.url());
+
+  const refusedWith = async (user) => {
+    googleUser = user;
+    await authPage.goto(`${AUTH_BASE}/auth/login`);
+    await authPage.click('.signin-btn');
+    await authPage.waitForSelector('.signin-msg.error', { timeout: 5000 }).catch(() => {});
+    return (await authPage.textContent('.signin-msg.error').catch(() => '')) ?? '';
+  };
+  const stranger = await refusedWith({ email: 'stranger@example.com' });
+  check('an address not on the list is turned away', stranger.includes('stranger@example.com isn’t on the list'), stranger);
+  check('a turned-away address gets no session', !(await sessionCookie()));
+  const unverified = await refusedWith({ email: 'reader@example.com', verified: false });
+  check('an address Google has not verified is turned away', unverified.includes('hasn’t verified'), unverified);
+  const otherApp = await refusedWith({ email: 'reader@example.com', aud: 'some-other-app' });
+  check('an ID token issued to another app is turned away', otherApp.includes('didn’t confirm'), otherApp);
+  const cancelled = await refusedWith({ email: 'reader@example.com', deny: true });
+  check('cancelling at Google says so', cancelled.includes('cancelled'), cancelled);
+  const markup = await refusedWith({ email: '<img src=x onerror="window.pwned=1">@evil.test' });
+  check('an address with markup in it is shown as text, not run',
+    markup.includes('<img') && !(await authPage.$('.signin-msg img')), markup);
+  check('still no session after all of that', !(await sessionCookie()));
+
+  const forged = await fetch(`${AUTH_BASE}/auth/callback?code=code-1&state=made-up`);
+  check('a callback this browser did not start is refused',
+    forged.status === 400 && (await forged.text()).includes('took too long'));
+  check('no uncaught errors on the sign-in pages', authErrors.length === 0, authErrors[0] ?? '');
+  await authCtx.close();
 } catch (err) {
   fail.push(` FAIL  test run threw: ${err.message}`);
 } finally {

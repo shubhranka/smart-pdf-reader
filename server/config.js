@@ -20,6 +20,10 @@ export const PUBLIC_DIR = path.join(ROOT, 'public');
  */
 export const env = (name, fallback = '') => process.env[name] || fallback;
 
+// Only this machine can connect unless you say otherwise. Putting the app online goes
+// through a reverse proxy on this machine with AUTH=google; see docs/DEPLOY.md.
+export const HOST = env('HOST', '127.0.0.1');
+
 // Recap sizing. Not context limits — a flash model would swallow a whole book in one
 // call. They are quality and cost limits: past roughly 25 pages a single summary goes
 // shallow and front-loaded, and re-running one re-pays for everything. Overridable so

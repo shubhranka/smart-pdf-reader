@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "node test/e2e.mjs",
+    "build": "node scripts/build.mjs",
     "start": "node server/index.js",
     "dev": "node --watch server/index.js"
   },

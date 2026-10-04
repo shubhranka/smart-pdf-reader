@@ -92,6 +92,15 @@ db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS recaps_range_idx
     ON recaps(doc_id, from_page, to_page, cut_hash);
   CREATE INDEX IF NOT EXISTS recaps_doc_idx ON recaps(doc_id, id DESC);
+
+  -- Sign-in sessions, used only with AUTH=google. The cookie holds a random token and
+  -- only its hash is kept here, so a copy of this file cannot be used to sign in.
+  CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    email      TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  ) WITHOUT ROWID;
 `);
 
 const now = () => new Date().toISOString();
@@ -295,6 +304,30 @@ export const imageCache = {
       `INSERT INTO image_cache (query, result, created_at) VALUES (?, ?, ?)
        ON CONFLICT(query) DO UPDATE SET result = excluded.result`
     ).run(query, JSON.stringify(result ?? null), now());
+  },
+};
+
+export const sessions = {
+  create(tokenHash, email, expiresAt) {
+    db.prepare(
+      'INSERT INTO sessions (token_hash, email, created_at, expires_at) VALUES (?, ?, ?, ?)'
+    ).run(tokenHash, email, now(), expiresAt);
+  },
+
+  /** The signed-in address, or null once the session is gone or past its date. */
+  find(tokenHash) {
+    const row = db.prepare(
+      'SELECT email FROM sessions WHERE token_hash = ? AND expires_at > ?'
+    ).get(tokenHash, now());
+    return row?.email ?? null;
+  },
+
+  remove(tokenHash) {
+    db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenHash);
+  },
+
+  removeExpired() {
+    db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(now());
   },
 };
 

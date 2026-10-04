@@ -6,6 +6,8 @@ const el = {
   dropzone: document.getElementById('dropzone'),
   fileInput: document.getElementById('file-input'),
   status: document.getElementById('upload-status'),
+  account: document.getElementById('account'),
+  accountEmail: document.getElementById('account-email'),
 };
 
 let onOpen = () => {};
@@ -160,6 +162,13 @@ export function initLibrary(openHandler) {
     el.dropzone.classList.remove('dragover');
     handleFiles(e.dataTransfer.files);
   });
+
+  // Only a server with sign-in on names anyone; otherwise the line stays hidden.
+  api.me().then(({ email }) => {
+    if (!email) return;
+    el.accountEmail.textContent = email;
+    el.account.hidden = false;
+  }).catch(() => {});
 
   refresh();
 }

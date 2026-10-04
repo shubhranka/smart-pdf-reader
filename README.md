@@ -166,6 +166,9 @@ PORT=3210
 Drop a PDF onto the page and start reading. The reader also works with no key at all. You just
 get a friendly note instead of an explanation.
 
+Only this machine can connect. To open it from your phone on the same Wi-Fi, set
+`HOST=0.0.0.0` in `.env`, but know that anyone on that network can then use it.
+
 Reading aloud needs no key. `npm install` brings in the voice engine, a few hundred MB in
 `node_modules`, and the voice model downloads the first time you press the speaker button. To
 leave it to your browser's voices instead, set `TTS_ENGINE=off` in `.env`.
@@ -194,6 +197,28 @@ that [supports structured outputs](https://openrouter.ai/models?supported_parame
 [`.env.example`](.env.example) lists good alternatives for each provider, plus the recap
 size settings and the read-aloud ones (engine, starting voice, model precision, where the model
 is kept).
+
+### 🌐 Putting it online
+
+You can run it on a server and open it from anywhere, with a sign-in so only the people you
+choose get in. Sign-in is behind a flag and off unless you turn it on:
+
+```ini
+AUTH=google
+GOOGLE_CLIENT_ID=1234567890-abc.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-client-secret
+ALLOWED_EMAILS=you@gmail.com, friend@gmail.com
+PUBLIC_URL=https://yourname.duckdns.org
+```
+
+People sign in with Google, and only the addresses in `ALLOWED_EMAILS` get past the sign-in
+page. That covers everything: the library, the PDFs themselves and every API call. Everyone you
+let in shares the one library and your AI key.
+
+**[docs/DEPLOY.md](docs/DEPLOY.md)** walks through doing it for free: an Oracle Cloud Always Free
+server, a DuckDNS address, Caddy for HTTPS, and a Google sign-in client. The service file in
+[`deploy/`](deploy/) turns sign-in on by itself, and the app won't start until it's set up, so
+it can't go online open by mistake.
 
 ## ⌨️ Handy controls
 
@@ -226,6 +251,8 @@ is kept).
   browser.
 - **Pictures are fetched by the server** and passed on to your browser, so image sites never see
   what you're reading.
+- **With sign-in on**, Google tells the app your email address and nothing else. Sessions are
+  kept in the same SQLite file and last 30 days; signing out ends yours on the server too.
 
 ## 🧪 Tests
 

@@ -1,0 +1,37 @@
+# Runs the reader on a server and restarts it if it crashes or the machine reboots.
+# docs/DEPLOY.md has the steps; in short:
+#
+#   sudo cp deploy/smart-pdf-reader.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now smart-pdf-reader
+#   journalctl -u smart-pdf-reader -f        # to watch it start
+#
+# Change User and the two paths if the app is not in /home/ubuntu/smart_pdf_reader.
+
+[Unit]
+Description=Smart PDF Reader
+After=network-online.target
+Wants=network-online.target
+# A setting missing from .env is not fixed by retrying, so stop after a few tries.
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/smart_pdf_reader
+ExecStart=/usr/bin/node server/index.js
+# Sign-in is forced on for this service, whatever .env says: these win over .env.
+# Until GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and ALLOWED_EMAILS are set there, the
+# app refuses to start, so it can never come up open to the internet by mistake.
+Environment=AUTH=google
+# Only Caddy, on this same machine, talks to the app directly.
+Environment=HOST=127.0.0.1
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

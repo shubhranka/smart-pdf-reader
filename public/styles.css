@@ -75,6 +75,12 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
   padding: 3rem 16px 4rem;
 }
 
+/* Sits in the library's top padding, so it moves nothing when it appears. */
+.account { display: flex; justify-content: flex-end; align-items: center; gap: 0.25rem; margin: -1.9rem 0 0.4rem; font-size: 0.8rem; color: var(--text-dim); min-width: 0; }
+.account span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The button's own padding would otherwise push its text in from the column's edge. */
+.account form { margin: 0 -0.5rem 0 0; flex: none; }
+
 .library-header h1 { margin: 0 0 0.35rem; font-size: 1.75rem; letter-spacing: -0.02em; }
 .subtitle { margin: 0 0 2rem; color: var(--text-dim); font-size: 0.95rem; }
 
@@ -134,6 +140,34 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .delete-btn { flex: none; background: none; border: none; color: var(--text-dim); padding: 0.35rem; border-radius: 6px; opacity: 0; transition: opacity 0.15s, color 0.15s, background 0.15s; }
 .doc-card:hover .delete-btn { opacity: 1; }
 .delete-btn:hover { color: var(--danger); background: var(--surface-2); }
+
+/* -------------------------------- sign-in -------------------------------- */
+/* The page the server renders at /auth/login when AUTH=google. */
+
+.signin { max-width: 400px; margin: 0 auto; padding: 18vh 16px 4rem; text-align: center; }
+.signin h1 { margin: 0 0 0.35rem; font-size: 1.75rem; letter-spacing: -0.02em; }
+.signin .subtitle { margin-bottom: 1.75rem; }
+.signin-msg {
+  margin: 0 0 1.25rem;
+  padding: 0.7rem 0.9rem;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  line-height: 1.45;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.signin-msg.error { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
+.signin-btn {
+  display: inline-block;
+  padding: 0.65rem 1.3rem;
+  border-radius: 8px;
+  background: var(--accent); color: #fff;
+  font-size: 0.95rem; font-weight: 550;
+  text-decoration: none;
+  box-shadow: var(--shadow-sm);
+}
+.signin-btn:hover { filter: brightness(1.08); }
+.signin-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 
 /* -------------------------------- reader -------------------------------- */
 

@@ -5,8 +5,9 @@ import crypto from 'node:crypto';
 import express from 'express';
 import multer from 'multer';
 
-import { PORT, PDF_DIR, PUBLIC_DIR, ROOT, IMAGE_USER_AGENT, EXTRA_IMAGE_HOSTS, RECAP_MAX_PAGES } from './config.js';
+import { PORT, HOST, PDF_DIR, PUBLIC_DIR, ROOT, IMAGE_USER_AGENT, EXTRA_IMAGE_HOSTS, RECAP_MAX_PAGES } from './config.js';
 import { documents, progress, lookups, recaps } from './db.js';
+import { AUTH, PUBLIC_URL, useAuth, authBanner } from './auth.js';
 import { ExplainError } from './errors.js';
 import { PROVIDER } from './llm/index.js';
 import { explain } from './features/explain.js';
@@ -19,6 +20,8 @@ import { inspectPdf } from './pdf/pdfinfo.js';
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
+// First, so that with AUTH=google nothing below answers anyone who has not signed in.
+useAuth(app);
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -50,6 +53,11 @@ const decodeName = (name) => Buffer.from(name, 'latin1').toString('utf8');
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, aiConfigured: Boolean(PROVIDER.key), provider: PROVIDER.id, model: PROVIDER.model });
+});
+
+// Who is signed in, for the library's "Sign out" line. Always null with AUTH=off.
+app.get('/api/me', (req, res) => {
+  res.json({ email: req.user ?? null });
 });
 
 app.get('/api/documents', (_req, res) => {
@@ -350,9 +358,10 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: err?.message || 'Something went wrong.' });
 });
 
-app.listen(PORT, () => {
-  console.log(`\n  Smart PDF Reader  ->  http://localhost:${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`\n  Smart PDF Reader  ->  ${AUTH === 'off' ? `http://localhost:${PORT}` : PUBLIC_URL}`);
   console.log(PROVIDER.key
-    ? `  ${PROVIDER.label}: ${PROVIDER.model}\n`
-    : `  ${PROVIDER.label}: not configured — copy .env.example to .env and add ${PROVIDER.keyVar}\n`);
+    ? `  ${PROVIDER.label}: ${PROVIDER.model}`
+    : `  ${PROVIDER.label}: not configured — copy .env.example to .env and add ${PROVIDER.keyVar}`);
+  console.log(`${authBanner(HOST)}\n`);
 });
