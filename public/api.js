@@ -1,8 +1,12 @@
+// With sign-in on, a session that has run out answers 401; with it off, nothing does.
+const toSignIn = () => location.assign('/auth/login');
+
 async function request(url, options = {}) {
   const res = await fetch(url, options);
   const isJson = res.headers.get('content-type')?.includes('application/json');
   const body = isJson ? await res.json().catch(() => null) : null;
 
+  if (res.status === 401) toSignIn();
   if (!res.ok) {
     const err = new Error(body?.error || `Request failed (${res.status})`);
     err.status = res.status;
@@ -14,6 +18,8 @@ async function request(url, options = {}) {
 
 export const api = {
   health: () => request('/api/health'),
+
+  me: () => request('/api/me'),
 
   listDocuments: () => request('/api/documents'),
 
@@ -31,6 +37,7 @@ export const api = {
       xhr.addEventListener('load', () => {
         let body = null;
         try { body = JSON.parse(xhr.responseText); } catch { /* handled below */ }
+        if (xhr.status === 401) toSignIn();
         if (xhr.status >= 200 && xhr.status < 300) resolve(body);
         else reject(new Error(body?.error || `Upload failed (${xhr.status})`));
       });
@@ -103,6 +110,7 @@ export const api = {
 export const fileUrl = (id) => `/api/documents/${id}/file`;
 
 export const getDocument = (id) => fetch(`/api/documents/${id}`).then((r) => {
+  if (r.status === 401) toSignIn();
   if (!r.ok) throw new Error(r.status === 404 ? 'That document is no longer in your library.' : 'Could not load document.');
   return r.json();
 });

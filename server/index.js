@@ -5,8 +5,9 @@ import crypto from 'node:crypto';
 import express from 'express';
 import multer from 'multer';
 
-import { PORT, PDF_DIR, PUBLIC_DIR, ROOT, IMAGE_USER_AGENT, EXTRA_IMAGE_HOSTS, RECAP_MAX_PAGES } from './config.js';
+import { PORT, HOST, PDF_DIR, PUBLIC_DIR, ROOT, IMAGE_USER_AGENT, EXTRA_IMAGE_HOSTS, RECAP_MAX_PAGES } from './config.js';
 import { documents, progress, lookups, recaps, ink } from './db.js';
+import { AUTH, PUBLIC_URL, useAuth, authBanner } from './auth.js';
 import { ExplainError } from './errors.js';
 import { PROVIDER } from './llm/index.js';
 import { explain } from './features/explain.js';
@@ -19,6 +20,9 @@ import { cutKey } from './pdf/pagetext.js';
 import { inspectPdf } from './pdf/pdfinfo.js';
 
 const app = express();
+// First, so that with AUTH=google nothing below answers anyone who has not signed in,
+// and no one signed out can make the server read an 8 MB body.
+useAuth(app);
 // A page of handwriting, or a long scratch pad, can outgrow the 1 MB every other route
 // gets. Parsed here first, its body is already read when the general parser sees it.
 app.use('/api/documents/:id/ink', express.json({ limit: '8mb' }));
@@ -54,6 +58,11 @@ const decodeName = (name) => Buffer.from(name, 'latin1').toString('utf8');
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, aiConfigured: Boolean(PROVIDER.key), provider: PROVIDER.id, model: PROVIDER.model });
+});
+
+// Who is signed in, for the library's "Sign out" line. Always null with AUTH=off.
+app.get('/api/me', (req, res) => {
+  res.json({ email: req.user ?? null });
 });
 
 app.get('/api/documents', (_req, res) => {
@@ -385,9 +394,10 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: err?.message || 'Something went wrong.' });
 });
 
-app.listen(PORT, () => {
-  console.log(`\n  Smart PDF Reader  ->  http://localhost:${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`\n  Smart PDF Reader  ->  ${AUTH === 'off' ? `http://localhost:${PORT}` : PUBLIC_URL}`);
   console.log(PROVIDER.key
-    ? `  ${PROVIDER.label}: ${PROVIDER.model}\n`
-    : `  ${PROVIDER.label}: not configured — copy .env.example to .env and add ${PROVIDER.keyVar}\n`);
+    ? `  ${PROVIDER.label}: ${PROVIDER.model}`
+    : `  ${PROVIDER.label}: not configured — copy .env.example to .env and add ${PROVIDER.keyVar}`);
+  console.log(`${authBanner(HOST)}\n`);
 });

@@ -186,6 +186,9 @@ PORT=3210
 Drop a PDF onto the page and start reading. The reader also works with no key at all. You just
 get a friendly note instead of an explanation.
 
+Only this machine can connect. To open it from your phone on the same Wi-Fi, set
+`HOST=0.0.0.0` in `.env`, but know that anyone on that network can then use it.
+
 Reading aloud needs no key. `npm install` brings in the voice engine, a few hundred MB in
 `node_modules`, and the voice model downloads the first time you press the speaker button. To
 leave it to your browser's voices instead, set `TTS_ENGINE=off` in `.env`.
@@ -214,6 +217,40 @@ that [supports structured outputs](https://openrouter.ai/models?supported_parame
 [`.env.example`](.env.example) lists good alternatives for each provider, plus the recap
 size settings and the read-aloud ones (engine, starting voice, model precision, where the model
 is kept).
+
+### 🔐 Sign-in
+
+To open the reader from anywhere but this machine, turn on sign-in so only the people you choose
+get in. It's behind a flag and off unless you turn it on:
+
+```ini
+AUTH=google
+GOOGLE_CLIENT_ID=1234567890-abc.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-client-secret
+ALLOWED_EMAILS=you@gmail.com, friend@gmail.com
+PUBLIC_URL=https://reader.example.com   # the address people open; defaults to http://localhost:3210
+```
+
+People sign in with Google, and only the addresses in `ALLOWED_EMAILS` get past the sign-in
+page. That covers everything: the library, the PDFs themselves and every API call. Everyone you
+let in shares the one library and your AI key.
+
+To get the client ID and secret:
+
+1. Open <https://console.cloud.google.com> and create a project (any name).
+2. Go to **Google Auth Platform** (in older menus: *APIs & Services → OAuth consent screen*):
+   - **Branding:** an app name and your email as the support address.
+   - **Audience:** *External*, and leave it in **Testing**. Add each person who should get in as
+     a **test user**. In Testing, Google itself only lets test users sign in, so your list is
+     enforced twice.
+3. Go to **Clients → Create client**, choose **Web application**, and add your `PUBLIC_URL`
+   followed by `/auth/callback` as an **authorized redirect URI**. To try it on this machine first,
+   that's `http://localhost:3210/auth/callback`.
+4. Copy the **client ID** and **client secret** into `.env`.
+
+The app asks only for your email address (`openid email`), so Google doesn't need to review it.
+With `AUTH=google` it won't start until every setting is there, and a `PUBLIC_URL` other than
+localhost must be `https://`. To turn sign-in off again, remove `AUTH=google` or set `AUTH=off`.
 
 ## ⌨️ Handy controls
 
@@ -251,6 +288,8 @@ is kept).
   browser.
 - **Pictures are fetched by the server** and passed on to your browser, so image sites never see
   what you're reading.
+- **With sign-in on**, Google tells the app your email address and nothing else. Sessions are
+  kept in the same SQLite file and last 30 days; signing out ends yours on the server too.
 
 ## 🧪 Tests
 

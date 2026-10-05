@@ -12,6 +12,12 @@
 
 <!-- ============================ LIBRARY ============================ -->
 <main id="library" class="view">
+  <!-- Shown only when sign-in is on (AUTH=google) -->
+  <div id="account" class="account" hidden>
+    <span id="account-email"></span>
+    <form method="post" action="/auth/logout"><button id="sign-out" class="text-btn">Sign out</button></form>
+  </div>
+
   <header class="library-header">
     <h1>Smart PDF Reader</h1>
     <p class="subtitle">Picks up where you left off. Highlight anything to find out what it means.</p>
