@@ -78,6 +78,14 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5.5h18M3 18.5h18"/><rect x="3" y="9" width="10" height="6" rx="3"/><path d="M16.5 12H21"/></svg>
     </button>
 
+    <button id="draw-btn" class="icon-btn" title="Draw on the pages (d)" aria-label="Draw on the pages" aria-pressed="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l1.2-4.6L15.6 5a2.1 2.1 0 0 1 3 3L8.2 18.4z"/><path d="M13.6 7l3 3"/></svg>
+    </button>
+
+    <button id="pad-btn" class="icon-btn" title="Scratch pad (n)" aria-label="Scratch pad" aria-pressed="false" aria-controls="pad">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3.5" width="14" height="17" rx="2"/><path d="M8.5 7.5h7"/><path d="M8.2 14.5c1.3-2.4 2.4-2.4 3.2 0s1.9 2.4 3.4 0"/></svg>
+    </button>
+
     <button id="recap-btn" class="icon-btn" title="Catch me up" aria-label="Catch me up on what I have read">
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <path d="M3.5 12a8.5 8.5 0 1 0 2.9-6.4L3 8"/>
@@ -109,6 +117,51 @@
       <div id="viewer" class="viewer"></div>
       <div id="tracker-marker" class="tracker-marker" aria-hidden="true"></div>
     </div>
+
+    <!-- A blank sheet for notes beside the book, one per book -->
+    <aside id="pad" class="pad" hidden aria-label="Scratch pad">
+      <div class="pad-head">
+        <strong>Scratch pad</strong>
+        <span class="head-actions">
+          <button id="pad-clear" class="text-btn">Clear</button>
+          <button id="pad-close" class="icon-btn" title="Close the scratch pad (n)" aria-label="Close the scratch pad">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </span>
+      </div>
+      <div id="pad-scroll" class="pad-scroll">
+        <div id="pad-sheet" class="pad-sheet"></div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Drawing tools, for the pages and the scratch pad alike -->
+  <div id="draw-bar" class="draw-bar" role="toolbar" aria-label="Drawing tools" hidden>
+    <button id="draw-pen" class="icon-btn draw-tool" data-tool="pen" title="Pen (p)" aria-label="Pen" aria-pressed="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l1.2-4.6L15.6 5a2.1 2.1 0 0 1 3 3L8.2 18.4z"/><path d="M13.6 7l3 3"/></svg>
+    </button>
+    <button id="draw-highlighter" class="icon-btn draw-tool" data-tool="highlighter" title="Highlighter (h)" aria-label="Highlighter" aria-pressed="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 3.5l6 6-7.5 7.5-6-6z"/><path d="M7 11l-2.5 6.5 2 2L13 17"/><path d="M3 21h5"/></svg>
+    </button>
+    <button id="draw-eraser" class="icon-btn draw-tool" data-tool="eraser" title="Eraser (e)" aria-label="Eraser" aria-pressed="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.2 19.5 4.4 15.7a1.6 1.6 0 0 1 0-2.2L13.6 4.3a1.6 1.6 0 0 1 2.2 0l3.9 3.9a1.6 1.6 0 0 1 0 2.2L10.9 19.5z"/><path d="M9 8.9l6.1 6.1M8.2 19.5H20"/></svg>
+    </button>
+    <span class="bar-sep" aria-hidden="true"></span>
+    <button id="draw-size" class="icon-btn draw-size" title="Thickness (1, 2, 3)" aria-label="Thickness">
+      <span class="size-dot" aria-hidden="true"></span>
+    </button>
+    <span id="draw-swatches" class="draw-swatches" role="radiogroup" aria-label="Colour"></span>
+    <span class="bar-sep" aria-hidden="true"></span>
+    <button id="draw-undo" class="icon-btn" title="Undo (⌘/Ctrl Z)" aria-label="Undo">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
+    </button>
+    <button id="draw-redo" class="icon-btn" title="Redo (⇧⌘/Ctrl Z)" aria-label="Redo">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg>
+    </button>
+    <span id="draw-status" class="draw-status" aria-live="polite"></span>
+    <button id="draw-close" class="icon-btn" title="Stop drawing on the pages (esc)" aria-label="Stop drawing on the pages">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    </button>
   </div>
 
   <!-- Reading tracker controls -->

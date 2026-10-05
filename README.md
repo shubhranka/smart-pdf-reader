@@ -127,6 +127,26 @@ your own machine. Nothing you read is sent anywhere for it, and it costs nothing
 you use it, it downloads once (about 90 MB, into `models/`) while the tracker bar shows its
 progress. After that it works offline. If it can't load, your system's own voice reads instead.
 
+### ✏️ Write on the page
+
+Press the pen button (or `d`) and draw straight on the PDF: underline a line, circle a word,
+scribble in the margin. Your ink belongs to the page, so it stays put when you zoom, scroll away
+or come back next week.
+
+- **Pen, highlighter and eraser,** with five colours for each and three thicknesses. The
+  highlighter tints the paper without hiding the words. The eraser rubs out whole strokes.
+- **A scratch pad beside the book.** The notepad button (or `n`) opens a blank sheet next to
+  the pages, one for each book, that grows as you write. The pages stay readable and selectable
+  while you use it.
+- **Pen pressure.** With a drawing tablet, the line gets thicker the harder you press. A mouse
+  or trackpad draws an even line.
+- **It saves itself.** Each stroke is saved half a second after you lift the pen. Close the tab
+  inside that half second and the browser asks before letting you go.
+
+Using a pen tablet such as an XP-Pen? Install its driver, allow it under **System Settings →
+Privacy & Security** (both *Accessibility* and *Input Monitoring* on a Mac), restart Chrome, and
+map the tablet to the screen Chrome is on. Hold the pen's side button to erase.
+
 ### 🌙 Easy on the eyes at night
 
 The app follows your system's light or dark mode. The moon button also darkens the pages
@@ -208,16 +228,21 @@ is kept).
 | `Space` | Play or pause the tracker (while it's on) |
 | `[` `]` | Tracker slower or faster, or the voice while it's reading aloud |
 | 🔊 **Speaker button** or `v` | Read aloud along with the tracker; pick a voice from the menu beside it |
+| ✏️ **Pen button** or `d` | Draw on the pages |
+| 🗒️ **Notepad button** or `n` | Open or close the scratch pad |
+| `p` `h` `e` | Pen, highlighter, eraser (while the drawing tools are showing) |
+| `1` `2` `3` | Fine, medium or bold line |
+| `Cmd`/`Ctrl` + `Z`, add `Shift` to redo | Undo or redo a stroke |
 | `f` | Full screen |
 | `←` `→` or type a page number | Jump around |
 | **Pinch** on the trackpad | Zoom the PDF |
 | `Cmd`/`Ctrl` + `+` `-` `0` | Zoom in, zoom out, back to 100% |
-| `Esc` | Close a panel, turn off the tracker, then leave the book |
+| `Esc` | Close a panel, put the pen down, turn off the tracker, then leave the book |
 
 ## 🔒 Where your stuff lives
 
 - **PDFs** are stored in `pdfs/`.
-- **Reading positions, lookups and recaps** are stored in a SQLite file in `data/`.
+- **Reading positions, lookups, recaps and drawings** are stored in a SQLite file in `data/`.
 - **The AI model** only receives the text you highlight or map, the page around it, or the range
   you ask to recap. Gemini calls send `store: false`. OpenRouter is told to use only upstream
   providers that don't keep prompts.
@@ -235,7 +260,7 @@ npm test
 
 This starts the app against a throwaway folder and a fake AI, then drives the real interface in
 headless Chrome: upload, resume, highlight-to-explain, mind maps, recaps, history, zoom, the
-reading tracker, reading aloud and more. A stand-in voice answers with a muted tone, so the voice
+reading tracker, reading aloud, drawing with a mouse and a simulated pen, and more. A stand-in voice answers with a muted tone, so the voice
 model is never loaded. It never touches your library and makes no network calls. It needs
 Google Chrome, or set `CHROME_PATH`.
 
@@ -244,7 +269,8 @@ Google Chrome, or set `CHROME_PATH`.
 Plain Express on the server and plain JavaScript in the browser, with no build step.
 [PDF.js](https://mozilla.github.io/pdf.js/) renders the pages, [rough.js](https://roughjs.com/)
 sketches the diagrams and mind maps, [kokoro-js](https://www.npmjs.com/package/kokoro-js)
-reads aloud, and `node:sqlite` stores everything.
+reads aloud, [perfect-freehand](https://github.com/steveruizok/perfect-freehand) shapes pen
+strokes, and `node:sqlite` stores everything.
 
 Curious how it works, or want to add a feature? **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
 walks through the code layout and the non-obvious decisions: lazy rendering, how recaps reuse
@@ -253,8 +279,8 @@ handled, and how the highlight keeps time with a voice that never says where it 
 
 ## 🌱 Ideas for next
 
-- Highlights that stay on the page
-- Notes attached to a selection
+- Highlights that snap to the selected text
+- Typed notes attached to a selection
 - Full-text search
 - An "explain this whole page" button
 - Export lookups as flashcards

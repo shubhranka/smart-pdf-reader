@@ -262,6 +262,52 @@ try {
     body: JSON.stringify({ page: 1, offsetPct: 0 }),
   });
 
+  /* ---- ink: the stroke format the browser and the server share ---- */
+  const inkFormat = await import(pathToFileURL(path.join(ROOT, 'public/ink-format.js')));
+  const inkLine = [0, 0, 1, 0.01, 2, 0, 3, 0.01, 4, 0];
+  const inkFlat = inkFormat.simplify(inkLine, null, 0.1);
+  check('ink: simplifying keeps the ends and drops the points on the line',
+    JSON.stringify(inkFlat.points) === '[0,0,4,0]', JSON.stringify(inkFlat.points));
+  // Its neighbours stay too: without them the spike would smear into a slow ramp.
+  const inkPressed = inkFormat.simplify(inkLine, [0.5, 0.5, 0.9, 0.5, 0.5], 0.1);
+  check('ink: a point pressed harder mid-line is kept',
+    inkPressed.points.length > inkFlat.points.length && inkPressed.pressures.includes(0.9), JSON.stringify(inkPressed));
+  const inkRamp = inkFormat.simplify(inkLine, [0.1, 0.3, 0.5, 0.7, 0.9], 0.1);
+  check('ink: pressure that changes steadily needs no extra points',
+    inkRamp.points.length === 4 && JSON.stringify(inkRamp.pressures) === '[0.1,0.9]', JSON.stringify(inkRamp));
+  const aStroke = { tool: 'pen', color: '#1c1b19', width: 1.8, points: [10, 10, 50, 40] };
+  check('ink: a colour that is not #rrggbb is refused', typeof inkFormat.checkStroke({ ...aStroke, color: 'red' }) === 'string');
+  check('ink: a point that is not a number is refused', typeof inkFormat.checkStroke({ ...aStroke, points: [1, NaN] }) === 'string');
+  check('ink: a stroke past the point limit is refused',
+    typeof inkFormat.checkStroke({ ...aStroke, points: new Array(2 * (inkFormat.LIMITS.points + 1)).fill(1) }) === 'string');
+  check('ink: pressures must match the points', typeof inkFormat.checkStroke({ ...aStroke, pressures: [0.5] }) === 'string');
+  const inkTidy = inkFormat.checkStroke({ ...aStroke, color: '#C8312B', points: [1.234, 2.25], pressures: [0.333] });
+  check('ink: a good stroke is tidied for storage',
+    inkTidy.color === '#c8312b' && inkTidy.points[0] === 1.2 && inkTidy.pressures[0] === 0.33, JSON.stringify(inkTidy));
+
+  /* ---- ink: the API ---- */
+  const putInk = (p, body) => fetch(`${BASE}/api/documents/${doc.id}/ink/${p}`, {
+    method: 'PUT', headers: { 'content-type': 'application/json' },
+    body: typeof body === 'string' ? body : JSON.stringify(body),
+  });
+  const inkOnServer = async () => (await fetch(`${BASE}/api/documents/${doc.id}/ink`)).json();
+  check('ink: a page saves', (await putInk(2, { strokes: [aStroke] })).ok);
+  check('ink: the scratch pad is page 0', (await putInk(0, { strokes: [aStroke] })).ok);
+  const inkBoth = await inkOnServer();
+  check('ink: both come back, in page order',
+    inkBoth.length === 2 && inkBoth[0].page === 0 && inkBoth[1].strokes[0].points[2] === 50, JSON.stringify(inkBoth).slice(0, 120));
+  check('ink: past the last page is refused', (await putInk(10, { strokes: [] })).status === 400);
+  check('ink: a malformed stroke is refused', (await putInk(2, { strokes: [{ ...aStroke, color: 'red' }] })).status === 400);
+  check('ink: JSON that does not parse is a 400, not a 500', (await putInk(2, '{"strokes":')).status === 400);
+  check('ink: more than the usual 1 MB is taken for ink',
+    (await putInk(2, { strokes: [aStroke], note: 'x'.repeat(2 * 1024 * 1024) })).ok);
+  const inkHuge = await putInk(2, `{"strokes":[],"note":"${'x'.repeat(9 * 1024 * 1024)}"}`);
+  check('ink: past 8 MB is a 413, not a 500', inkHuge.status === 413, `got ${inkHuge.status}`);
+  await putInk(2, { strokes: [] });
+  await putInk(0, { strokes: [] });
+  check('ink: an emptied page is gone', (await inkOnServer()).length === 0);
+  check('ink: an unknown document is a 404', (await fetch(`${BASE}/api/documents/nope/ink`)).status === 404);
+
   /* ---- read aloud: what gets said ---- */
   const { buildChunk } = await import(pathToFileURL(path.join(ROOT, 'public/speech-text.js')));
   // Words laid out the way the tracker measures them. A line is a string, or
@@ -1366,6 +1412,275 @@ try {
   await scrollToFilePage(6);
   await page.waitForFunction(() => document.querySelector('.outline-row.active')?.textContent.includes('Chapter 2'), null, { timeout: 3000 }).catch(() => {});
   check('moving past it closes the chapter again', (await expanded()) === 'false');
+
+  /* ---- drawing on the pages, and the scratch pad ---- */
+  await page.evaluate(() => {
+    for (const key of ['spr:ink', 'spr:pad']) localStorage.removeItem(key);
+    localStorage.setItem('spr:zoom', '1');
+  });
+  await page.goto(`${BASE}/#/doc/${doc.id}`, { waitUntil: 'networkidle' });
+  // A hash change resolves before the book is open, and opening it restores the saved
+  // place; go to the top only after that, and wait for page 1 to have its ink layer.
+  const inkTop = async () => {
+    await page.waitForFunction(() => document.getElementById('page-count').textContent === '9'
+      && document.querySelector('.page canvas'), null, { timeout: 20000 });
+    await page.evaluate(() => { document.getElementById('viewer-container').scrollTop = 0; });
+    await page.waitForSelector('.page[data-page="1"] .ink-layer', { timeout: 10000 });
+  };
+  await inkTop();
+
+  const page1 = '.page[data-page="1"]';
+  const layer1 = `${page1} .ink-layer`;
+  const padLayer = '#pad-sheet .ink-layer';
+  const strokesOn = async (n) => (await inkOnServer()).find((p) => p.page === n)?.strokes ?? [];
+  const pathsIn = (sel) => page.locator(`${sel} path`).count();
+  const inkAt = async (sel, fx, fy) => {
+    const b = await page.locator(sel).boundingBox();
+    return [b.x + b.width * fx, b.y + b.height * fy];
+  };
+  const inkDrag = async (from, to, steps = 12) => {
+    await page.mouse.move(...from);
+    await page.mouse.down();
+    for (let i = 1; i <= steps; i++) {
+      await page.mouse.move(from[0] + ((to[0] - from[0]) * i) / steps, from[1] + ((to[1] - from[1]) * i) / steps);
+    }
+    await page.mouse.up();
+  };
+  const inkSaved = () => page.waitForFunction(() => document.getElementById('draw-status').textContent === 'Saved',
+    null, { timeout: 5000 }).then(() => true, () => false);
+  const pointerEventsOf = (sel) => page.evaluate((s) => getComputedStyle(document.querySelector(s)).pointerEvents, sel);
+
+  check('the ink layer ignores the pointer until the pen is out', (await pointerEventsOf(layer1)) === 'none');
+  await page.keyboard.press('d');
+  check('d puts the pen out and shows the drawing tools',
+    await page.locator('#draw-bar').isVisible() && (await page.locator('#draw-btn').getAttribute('aria-pressed')) === 'true');
+
+  await inkDrag(await inkAt(page1, 0.2, 0.3), await inkAt(page1, 0.6, 0.34));
+  check('a drag on the page draws a stroke', (await pathsIn(layer1)) === 1);
+  check('drawing selects no text', await page.evaluate(() => getSelection().isCollapsed));
+  check('and brings up no lookup button', await page.locator('#sel-actions').isHidden());
+  check('the stroke saves by itself', await inkSaved());
+  const [inkFirst] = await strokesOn(1);
+  const inkBase = await page.evaluate((s) => {
+    const el = document.querySelector(s);
+    return {
+      w: Number(el.style.getPropertyValue('--base-w')), h: Number(el.style.getPropertyValue('--base-h')),
+      box: el.querySelector('.ink-layer').getAttribute('viewBox'),
+    };
+  }, page1);
+  check('the ink layer is the page at 100%, in page units', inkBase.box === `0 0 ${inkBase.w} ${inkBase.h}`,
+    `${inkBase.box} vs ${inkBase.w}x${inkBase.h}`);
+  check('the stroke is stored where it was drawn',
+    inkFirst && Math.abs(inkFirst.points[0] - inkBase.w * 0.2) < 2 && Math.abs(inkFirst.points[1] - inkBase.h * 0.3) < 2,
+    JSON.stringify(inkFirst?.points.slice(0, 2)));
+  check('a mouse draws an even line, with no pressures stored', inkFirst && !('pressures' in inkFirst));
+
+  // Ink is in page units, so a zoom moves and scales it exactly with the page.
+  const strokeFraction = () => page.evaluate((s) => {
+    const p = document.querySelector(`${s} .ink-layer path`).getBoundingClientRect();
+    const r = document.querySelector(s).getBoundingClientRect();
+    return { x: (p.left - r.left) / r.width, y: (p.top - r.top) / r.height, w: p.width / r.width };
+  }, page1);
+  const inkBefore = await strokeFraction();
+  await page.locator('#zoom-in').click();
+  await page.waitForTimeout(1400);
+  const inkAfter = await strokeFraction();
+  check('zooming keeps the stroke on the same spot of the page',
+    ['x', 'y', 'w'].every((k) => Math.abs(inkBefore[k] - inkAfter[k]) < 0.005),
+    `${JSON.stringify(inkBefore)} -> ${JSON.stringify(inkAfter)}`);
+  check('and the layer survives the re-render', (await pathsIn(layer1)) === 1);
+  await page.locator('#zoom-out').click();
+  await page.waitForTimeout(1000);
+  await inkTop();
+
+  await page.keyboard.press('h');
+  await inkDrag(await inkAt(page1, 0.15, 0.45), await inkAt(page1, 0.7, 0.45));
+  check('a highlighter stroke goes under the pen ink', await page.evaluate((s) => {
+    const [marks, lines] = document.querySelector(s).children;
+    return marks.children.length === 1 && lines.children.length === 1;
+  }, layer1));
+
+  await page.keyboard.press('p');
+  await page.keyboard.press('3');
+  await inkDrag(await inkAt(page1, 0.2, 0.6), await inkAt(page1, 0.5, 0.6));
+  await inkSaved();
+  check('the thickness picker sets the width', (await strokesOn(1)).at(-1)?.width === 3,
+    String((await strokesOn(1)).at(-1)?.width));
+  check('and the bar shows it', (await page.locator('#draw-size').getAttribute('data-size')) === 'bold');
+  await page.keyboard.press('2');
+
+  const inkDrawn = await pathsIn(layer1);
+  await page.keyboard.press('e');
+  await inkDrag(await inkAt(page1, 0.35, 0.2), await inkAt(page1, 0.35, 0.4), 16);
+  check('the eraser takes out the stroke it crosses', (await pathsIn(layer1)) === inkDrawn - 1);
+  await page.keyboard.press('ControlOrMeta+z');
+  check('undo puts it back', (await pathsIn(layer1)) === inkDrawn);
+  await page.keyboard.press('ControlOrMeta+Shift+z');
+  check('redo takes it out again', (await pathsIn(layer1)) === inkDrawn - 1);
+  check('and the server keeps up', await inkSaved() && (await strokesOn(1)).length === inkDrawn - 1);
+  await page.keyboard.press('ControlOrMeta+z');
+  await page.keyboard.press('p');
+
+  const penFill = () => page.evaluate((s) => document.querySelector(`${s} g:last-child path`).getAttribute('fill'), layer1);
+  const inkLight = await penFill();
+  await page.click('#dark-pages-btn');
+  const inkDark = await penFill();
+  check('dark pages turn the ink the way they turn the page',
+    inkLight === '#1c1b19' && inkDark !== inkLight && parseInt(inkDark.slice(1, 3), 16) > 160, `${inkLight} -> ${inkDark}`);
+  await page.click('#dark-pages-btn');
+
+  await page.keyboard.press('t');
+  check('turning the tracker on puts the pen down',
+    (await page.locator('#draw-btn').getAttribute('aria-pressed')) === 'false' && await page.locator('#draw-bar').isHidden());
+  await page.keyboard.press('d');
+  check('and taking the pen out turns the tracker off', (await page.locator('#tracker-btn').getAttribute('aria-pressed')) === 'false');
+  await page.keyboard.press('Escape');
+  check('Escape puts the pen down', (await page.locator('#draw-btn').getAttribute('aria-pressed')) === 'false');
+  check('and the page selects text as before', (await pointerEventsOf(layer1)) === 'none');
+
+  // A pen, as a tablet driver reports one.
+  await page.keyboard.press('d');
+  const cdp = await page.context().newCDPSession(page);
+  const stylus = (type, [x, y], o = {}) => cdp.send('Input.dispatchMouseEvent', {
+    type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1, pointerType: 'pen', ...o,
+  });
+  const stylusLine = async (fy, force, o = {}) => {
+    const from = await inkAt(page1, 0.2, fy), to = await inkAt(page1, 0.6, fy);
+    await stylus('mousePressed', from, { force: typeof force === 'function' ? force(0) : force, ...o });
+    for (let i = 1; i <= 20; i++) {
+      await stylus('mouseMoved', [from[0] + ((to[0] - from[0]) * i) / 20, from[1]],
+        { force: typeof force === 'function' ? force(i / 20) : force, ...o });
+    }
+    await stylus('mouseReleased', to, { force: 0, ...o });
+  };
+  await stylusLine(0.7, 0.2);
+  await stylusLine(0.8, 0.9);
+  await inkSaved();
+  const [inkSoft, inkHard] = (await strokesOn(1)).slice(-2);
+  check('a pen stroke keeps its pressure',
+    inkSoft?.pressures?.every((p) => Math.abs(p - 0.2) < 0.01) && inkHard?.pressures?.every((p) => Math.abs(p - 0.9) < 0.01),
+    JSON.stringify([inkSoft?.pressures, inkHard?.pressures]));
+  const inkWidths = await page.evaluate((s) => [...document.querySelectorAll(`${s} g:last-child path`)]
+    .slice(-2).map((p) => p.getBoundingClientRect().height), layer1);
+  check('pressing harder draws a thicker line', inkWidths[1] > inkWidths[0] * 1.6, inkWidths.map((w) => w.toFixed(1)).join(' vs '));
+
+  // A long line is drawn in pieces while the pen is down, so each frame redraws only the
+  // newest; lifting the pen leaves one stroke.
+  const inkPathsBefore = await pathsIn(layer1);
+  const longFrom = await inkAt(page1, 0.15, 0.75);
+  await stylus('mousePressed', longFrom, { force: 0.5 });
+  for (let i = 1; i <= 120; i++) {
+    await stylus('mouseMoved', [longFrom[0] + i * 3, longFrom[1] + Math.sin(i / 4) * 6], { force: 0.5 });
+  }
+  const inkPieces = (await pathsIn(layer1)) - inkPathsBefore;
+  await stylus('mouseReleased', [longFrom[0] + 360, longFrom[1]], { force: 0 });
+  check('a long line is drawn in pieces while the pen is down', inkPieces > 2, `${inkPieces} pieces`);
+  check('and is one stroke once it lifts', (await pathsIn(layer1)) === inkPathsBefore + 1);
+  await page.keyboard.press('ControlOrMeta+z');
+
+  // Pen to screen within a frame, as Chrome itself measures it. Redrawing in a
+  // requestAnimationFrame instead of in the event once cost a whole frame (6.8 -> 23.7 ms).
+  await browser.startTracing(page, { categories: ['input', 'latencyInfo', 'benchmark'] });
+  await stylus('mousePressed', longFrom, { force: 0.5 });
+  for (let i = 1; i <= 60; i++) {
+    await stylus('mouseMoved', [longFrom[0] + i * 4, longFrom[1] + Math.sin(i / 4) * 6], { force: 0.5 });
+    await page.waitForTimeout(8);
+  }
+  await stylus('mouseReleased', [longFrom[0] + 240, longFrom[1]], { force: 0 });
+  const inkTrace = JSON.parse((await browser.stopTracing()).toString());
+  const inkStarts = new Map(), inkLatency = [];
+  for (const e of inkTrace.traceEvents ?? inkTrace) {
+    if (e.name !== 'InputLatency::MouseMove') continue;
+    const key = e.id2?.local ?? e.id2?.global ?? e.id;
+    if (e.ph === 'b') inkStarts.set(key, e.ts);
+    else if (e.ph === 'e' && inkStarts.has(key)) inkLatency.push((e.ts - inkStarts.get(key)) / 1000);
+  }
+  inkLatency.sort((a, b) => a - b);
+  const inkMedian = inkLatency[inkLatency.length >> 1];
+  check('the ink reaches the screen within a frame of the pen moving',
+    inkLatency.length > 30 && inkMedian < 16, `median ${inkMedian?.toFixed(1)} ms over ${inkLatency.length} moves`);
+  await page.keyboard.press('ControlOrMeta+z');
+
+  await stylusLine(0.88, (t) => 0.2 + t * 0.6, { pointerType: 'mouse' });
+  await inkSaved();
+  check('a tablet that calls itself a mouse still gets its pressure',
+    Boolean((await strokesOn(1)).at(-1)?.pressures), JSON.stringify((await strokesOn(1)).at(-1)?.pressures?.slice(0, 4)));
+
+  const inkBeforeBarrel = await pathsIn(layer1);
+  await page.evaluate(() => {
+    window.inkMenuBlocked = null;
+    window.addEventListener('contextmenu', (e) => { window.inkMenuBlocked = e.defaultPrevented; }, { once: true });
+  });
+  const onHard = await inkAt(page1, 0.4, 0.8);
+  await stylus('mousePressed', onHard, { button: 'right', buttons: 2, force: 0.5 });
+  await stylus('mouseMoved', [onHard[0] + 4, onHard[1]], { button: 'right', buttons: 2, force: 0.5 });
+  await stylus('mouseReleased', [onHard[0] + 4, onHard[1]], { button: 'right', buttons: 0 });
+  check("a pen's barrel button erases", (await pathsIn(layer1)) === inkBeforeBarrel - 1);
+  check('without opening the context menu', await page.evaluate(() => window.inkMenuBlocked) === true);
+  await cdp.detach();
+
+  const inkKept = await pathsIn(layer1);
+  await inkSaved();
+  await page.reload({ waitUntil: 'networkidle' });
+  await inkTop();
+  await page.waitForFunction(([s, n]) => document.querySelectorAll(`${s} path`).length === n, [layer1, inkKept], { timeout: 10000 })
+    .catch(() => {});
+  check('the ink is all there after a reload', (await pathsIn(layer1)) === inkKept, `${await pathsIn(layer1)} of ${inkKept}`);
+
+  // Closing the tab inside the half second before a save: warned, and saved regardless.
+  await page.keyboard.press('d');
+  const inkBeforeQuit = (await strokesOn(1)).length;
+  await inkDrag(await inkAt(page1, 0.2, 0.5), await inkAt(page1, 0.5, 0.52));
+  let inkWarned = false;
+  page.once('dialog', (dlg) => { inkWarned = dlg.type() === 'beforeunload'; dlg.accept(); });
+  await page.reload({ waitUntil: 'networkidle' });
+  check('leaving with ink unsaved asks first', inkWarned);
+  check('and the ink reaches the server all the same',
+    await until(async () => (await strokesOn(1)).length === inkBeforeQuit + 1, 3000));
+
+  /* ---- the scratch pad ---- */
+  await page.keyboard.press('n');
+  check('n opens the scratch pad', await page.locator('#pad').isVisible());
+  check('with the drawing tools, though the pages are not being drawn on',
+    await page.locator('#draw-bar').isVisible() && await page.locator('#draw-close').isHidden());
+  const padHeight = async () => Number((await page.locator(padLayer).getAttribute('viewBox')).split(' ')[3]);
+  const padStart = await padHeight();
+  await inkDrag(await inkAt('#pad-sheet', 0.1, 0.05), await inkAt('#pad-sheet', 0.6, 0.07));
+  check('the pad takes ink without the pen out on the pages', (await pathsIn(padLayer)) === 1);
+  const padView = await page.locator('#pad-scroll').boundingBox();
+  const padSheet = await page.locator('#pad-sheet').boundingBox();
+  const padLow = Math.min(padView.y + padView.height, padSheet.y + padSheet.height) - 30;
+  await inkDrag([padSheet.x + 40, padLow], [padSheet.x + 200, padLow]);
+  check('the pad grows as you write near its end', (await padHeight()) > padStart, `${padStart} -> ${await padHeight()}`);
+  check('the pad saves as page 0', await inkSaved() && (await strokesOn(0)).length === 2);
+
+  page.once('dialog', (dlg) => dlg.accept());
+  await page.locator('#pad-clear').click();
+  check('Clear empties the pad', (await pathsIn(padLayer)) === 0);
+  await page.locator('#draw-undo').click();
+  check('and undo brings it all back', (await pathsIn(padLayer)) === 2);
+
+  await page.locator('#history-btn').click();
+  const historyGap = await page.evaluate(() => innerWidth - document.getElementById('history').getBoundingClientRect().right);
+  check('drawers move aside for the pad', historyGap > 300, `${Math.round(historyGap)}px from the edge`);
+  await page.locator('#history-close').click();
+
+  await inkSaved();
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForFunction((s) => document.querySelectorAll(`${s} path`).length === 2, padLayer, { timeout: 8000 }).catch(() => {});
+  check('the pad stays open, notes and all, across a reload',
+    await page.locator('#pad').isVisible() && (await pathsIn(padLayer)) === 2);
+  await page.keyboard.press('n');
+  check('n closes it again', await page.locator('#pad').isHidden() && await page.locator('#draw-bar').isHidden());
+  await page.evaluate(() => { for (const key of ['spr:ink', 'spr:pad']) localStorage.removeItem(key); });
+
+  await fetch(`${BASE}/api/documents/${ldoc.id}/ink/1`, {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ strokes: [aStroke] }),
+  });
+  await fetch(`${BASE}/api/documents/${ldoc.id}`, { method: 'DELETE' });
+  const ldocAgain = await (await fetch(`${BASE}/api/documents`, { method: 'POST', body: lform })).json();
+  check('removing a book removes its ink',
+    (await (await fetch(`${BASE}/api/documents/${ldocAgain.id}/ink`)).json()).length === 0);
 
   check('no uncaught errors in the page', pageErrors.length === 0, pageErrors[0] ?? '');
 

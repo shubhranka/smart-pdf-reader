@@ -14,6 +14,8 @@ public/            the browser side, no build step
   tracker.js         the reading tracker: word geometry, springs, pacing, read-aloud loop
   speech-text.js     what a voice should say for a page: sentences, headings, skipped marks
   narrator.js        the voices: Kokoro via /api/speech, or the browser's speechSynthesis
+  ink.js             pen, highlighter, eraser and scratch pad: layers, pointer input, undo, saving
+  ink-format.js      what a stroke is and the rules it must meet; shared with the server
   api.js             fetch wrappers
 
 server/
@@ -36,6 +38,7 @@ server/
     mindmap.js       mind map prompt, schema, tree clean-up and cache
     images.js        picture search and the image proxy's host list
     speech.js        read-aloud: lazy Kokoro model, one-at-a-time queue, test stub
+    ink.js           checks a page of strokes against public/ink-format.js before it is stored
   pdf/
     pagetext.js      server-side page text, cached per page, and the line cut
     pdfinfo.js       page count and title, read server-side on upload
@@ -59,6 +62,50 @@ test/e2e.mjs       drives the real UI in Chrome against a stub Gemini
   because generation is about 0.45× real time and a long sentence after a short heading would
   otherwise leave a gap. `TTS_ENGINE=stub` answers with a tone shaped like speech, which is
   what the test suite uses.
+
+- **Ink lives in page units, so zoom never touches it.** A stroke is stored in the page's own
+  size at 100%, and each rendered page carries one SVG whose viewBox is that size, stretched
+  over the page box. The box already follows the live zoom, so ink keeps up with a pinch for
+  free and stays sharp at 500%. The layer is a sibling of `.page-inner`, not inside it, and
+  `ink.js` keeps it across re-renders. The pointer is captured by the `.page` itself, so
+  re-appending the layer mid-stroke does not drop the stroke. The scratch pad is page 0 of the same table: a
+  sheet 600 units wide whose viewBox grows as the notes do. Pen strokes are filled
+  [perfect-freehand](https://github.com/steveruizok/perfect-freehand) outlines with
+  **`simulatePressure: false`**. Its default replaces real pen pressure with a guess from
+  speed. The other settings are tldraw's for a real-pressure pen (0.62 for thinning,
+  streamline and smoothing, and its pressure easing). Those smooth out a tablet sensor's
+  wobble. Because the smoothing depends on how far apart the samples are, **pen strokes
+  keep every sample**. A thinned copy would be drawn a little differently from the line
+  that was drawn, and visibly shift on pen-up. For the same reason, the pieces of a line in
+  progress are slices of one smoothing pass over the whole line, not separately smoothed
+  stretches. Highlighters, a plain centreline, are thinned with Ramer–Douglas–Peucker.
+  Points are added back along long gaps before drawing (`densify`). With only two points,
+  perfect-freehand draws a straight run at full width whatever its pressure. Pressure is kept from a `pen`, and from
+  a `mouse` whose pressure really varies, because some tablet drivers report themselves as a mouse.
+  A stroke in progress is redrawn **inside each pointer event**, not in a
+  `requestAnimationFrame`. Deferring it looks tidier but costs a whole frame: Chrome's
+  `InputLatency::MouseMove` went from 6.8 ms to 23.7 ms, and tldraw measures 6.8 ms. A test
+  guards this. Redrawing per event is affordable because the line is drawn in pieces of 32
+  samples and finished pieces are left alone, about 0.2 ms however long the line gets. Its tip runs out to the browser's
+  `getPredictedEvents()`, which hides a frame or so more. On pen-up the pieces give way to
+  one path.
+  On dark pages, `ink.js` works out the colours through the same matrix as the canvas's
+  `invert(0.9) hue-rotate(180deg)`, rather than filtering the layer. A filter on a page-sized
+  layer would be redone on every frame of a stroke.
+- **A page of ink is saved whole, one request at a time.** Every change marks its page dirty.
+  Half a second later the page's full list is PUT, on a promise chain owned by the
+  long-lived `createInk` factory. So the request that lands last carries the newest version,
+  and an undo can never be overtaken by the stroke it undid. Opening a book waits for that
+  chain to drain before it reads, so a book closed and reopened at once never loads stale
+  ink. Nothing can be drawn until the load succeeds; otherwise a failed read followed by a
+  save would wipe the stored copy. A tab going away (`visibilitychange` to hidden, `pagehide`)
+  sends pending pages with `keepalive`. The browser lets all such requests carry only about
+  64 KB between them, `sendBeacon` included, so progress goes first, then the smallest pages
+  fit into what is left. `beforeunload` warns only while ink is unsaved. The validation rules sit
+  in `public/ink-format.js`, which has no DOM and no imports, so the server and the tests load
+  the very same file. Ink routes get their own 8 MB body parser ahead of the global 1 MB one.
+  The error handler passes the body parser's 4xx refusals through, rather than turning them
+  into 500s that would look worth retrying.
 
 - **Page text is extracted on the server, not taken from the browser.** The viewer only
   captures text for pages it has actually drawn, so everything you scrolled past — and any

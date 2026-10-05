@@ -86,6 +86,18 @@ export const api = {
   deleteRecap: (id) => request(`/api/recaps/${id}`, { method: 'DELETE' }),
 
   clearRecaps: (docId) => request(`/api/documents/${docId}/recaps`, { method: 'DELETE' }),
+
+  getInk: (docId) => request(`/api/documents/${docId}/ink`),
+
+  // `body` arrives already serialised: the caller measures it first, because a closing
+  // tab can only send so much.
+  saveInk: (docId, page, body, { keepalive = false } = {}) =>
+    request(`/api/documents/${docId}/ink/${page}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body,
+      keepalive,
+    }),
 };
 
 export const fileUrl = (id) => `/api/documents/${id}/file`;

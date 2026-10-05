@@ -18,6 +18,7 @@
     "kokoro-js": "^1.2.1",
     "multer": "^2.4.0",
     "pdfjs-dist": "^6.3.289",
+    "perfect-freehand": "^1.2.3",
     "roughjs": "^4.6.6"
   },
   "devDependencies": {

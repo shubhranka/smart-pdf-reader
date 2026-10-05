@@ -6,7 +6,7 @@ import express from 'express';
 import multer from 'multer';
 
 import { PORT, PDF_DIR, PUBLIC_DIR, ROOT, IMAGE_USER_AGENT, EXTRA_IMAGE_HOSTS, RECAP_MAX_PAGES } from './config.js';
-import { documents, progress, lookups, recaps } from './db.js';
+import { documents, progress, lookups, recaps, ink } from './db.js';
 import { ExplainError } from './errors.js';
 import { PROVIDER } from './llm/index.js';
 import { explain } from './features/explain.js';
@@ -14,10 +14,14 @@ import { generateRecap } from './features/recap.js';
 import { generateMindmap } from './features/mindmap.js';
 import { findImage, ALLOWED_IMAGE_HOSTS } from './features/images.js';
 import { speechStatus, loadSpeech, checkSpeechRequest, synthesize } from './features/speech.js';
+import { checkInkPage } from './features/ink.js';
 import { cutKey } from './pdf/pagetext.js';
 import { inspectPdf } from './pdf/pdfinfo.js';
 
 const app = express();
+// A page of handwriting, or a long scratch pad, can outgrow the 1 MB every other route
+// gets. Parsed here first, its body is already read when the general parser sees it.
+app.use('/api/documents/:id/ink', express.json({ limit: '8mb' }));
 app.use(express.json({ limit: '1mb' }));
 
 const upload = multer({
@@ -186,6 +190,29 @@ app.post('/api/explain', asyncRoute(async (req, res) => {
   res.json(result);
 }));
 
+/* ----------------------------------- ink ---------------------------------- */
+
+app.get('/api/documents/:id/ink', (req, res) => {
+  if (!documents.get(req.params.id)) return res.status(404).json({ error: 'Document not found.' });
+  res.json(ink.listByDoc(req.params.id));
+});
+
+// A page is saved whole: the browser always sends every stroke on it, as it stands.
+// Page 0 is the scratch pad.
+app.put('/api/documents/:id/ink/:page', (req, res) => {
+  const doc = documents.get(req.params.id);
+  if (!doc) return res.status(404).json({ error: 'Document not found.' });
+
+  const page = Number(req.params.page);
+  const last = doc.pages > 0 ? doc.pages : 100_000;
+  if (!Number.isInteger(page) || page < 0 || page > last) {
+    return res.status(400).json({ error: `There is no page ${req.params.page} to draw on.` });
+  }
+
+  ink.save(doc.id, page, checkInkPage(req.body));
+  res.json({ ok: true });
+});
+
 /* --------------------------------- mind map -------------------------------- */
 
 app.post('/api/mindmap', asyncRoute(async (req, res) => {
@@ -335,6 +362,7 @@ app.post('/api/speech', asyncRoute(async (req, res) => {
 
 app.use('/vendor/pdfjs', express.static(path.join(ROOT, 'node_modules/pdfjs-dist')));
 app.use('/vendor/roughjs', express.static(path.join(ROOT, 'node_modules/roughjs')));
+app.use('/vendor/perfect-freehand', express.static(path.join(ROOT, 'node_modules/perfect-freehand')));
 app.use(express.static(PUBLIC_DIR));
 
 /* ------------------------------ error handling ---------------------------- */
@@ -345,6 +373,13 @@ app.use((err, _req, res, _next) => {
   }
   if (err?.code === 'LIMIT_FILE_SIZE') {
     return res.status(413).json({ error: 'That PDF is larger than the 512 MB limit.' });
+  }
+  // The body parser's own refusals, a body too large or JSON that does not parse, say
+  // so with a 4xx. Passed on as a 500 they would look worth retrying, and are not.
+  if (err?.expose && err.status >= 400 && err.status < 500) {
+    return res.status(err.status).json({
+      error: err.status === 413 ? 'That is too much to send in one go.' : err.message,
+    });
   }
   console.error(err);
   res.status(500).json({ error: err?.message || 'Something went wrong.' });

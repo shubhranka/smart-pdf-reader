@@ -97,7 +97,7 @@ function render(docs) {
 
     li.querySelector('.delete-btn').addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (!confirm(`Remove "${doc.title || doc.filename}"? Its saved page and lookups go too.`)) return;
+      if (!confirm(`Remove "${doc.title || doc.filename}"? Its saved page, lookups and drawings go too.`)) return;
       await api.deleteDocument(doc.id);
       refresh();
     });

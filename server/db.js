@@ -92,6 +92,17 @@ db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS recaps_range_idx
     ON recaps(doc_id, from_page, to_page, cut_hash);
   CREATE INDEX IF NOT EXISTS recaps_doc_idx ON recaps(doc_id, id DESC);
+
+  -- Pen and highlighter strokes, one row per page that has any; page 0 is the book's
+  -- scratch pad. The browser always sends a page's whole list, so a row is replaced
+  -- rather than patched, and a page whose last stroke is erased loses its row.
+  CREATE TABLE IF NOT EXISTS ink (
+    doc_id     TEXT    NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    page       INTEGER NOT NULL,
+    strokes    TEXT    NOT NULL,
+    updated_at TEXT    NOT NULL,
+    PRIMARY KEY (doc_id, page)
+  ) WITHOUT ROWID;
 `);
 
 const now = () => new Date().toISOString();
@@ -127,6 +138,7 @@ export const documents = {
     db.prepare('DELETE FROM recaps WHERE doc_id = ?').run(id);
     db.prepare('DELETE FROM recap_chunk_cache WHERE doc_id = ?').run(id);
     db.prepare('DELETE FROM page_text WHERE doc_id = ?').run(id);
+    db.prepare('DELETE FROM ink WHERE doc_id = ?').run(id);
     db.prepare('DELETE FROM documents WHERE id = ?').run(id);
   },
 };
@@ -266,6 +278,25 @@ export const recaps = {
 
   removeAllForDoc(docId) {
     return db.prepare('DELETE FROM recaps WHERE doc_id = ?').run(docId).changes;
+  },
+};
+
+export const ink = {
+  listByDoc(docId) {
+    return db.prepare('SELECT page, strokes FROM ink WHERE doc_id = ? ORDER BY page')
+      .all(docId).map((r) => ({ page: r.page, strokes: JSON.parse(r.strokes) }));
+  },
+
+  /** Replace a page's strokes; an empty list clears the page. */
+  save(docId, page, strokes) {
+    if (!strokes.length) {
+      db.prepare('DELETE FROM ink WHERE doc_id = ? AND page = ?').run(docId, page);
+      return;
+    }
+    db.prepare(
+      `INSERT INTO ink (doc_id, page, strokes, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(doc_id, page) DO UPDATE SET strokes = excluded.strokes, updated_at = excluded.updated_at`
+    ).run(docId, page, JSON.stringify(strokes), now());
   },
 };
 

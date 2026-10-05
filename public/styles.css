@@ -272,6 +272,8 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
      so a pinch resizes every page by setting one variable. */
   width: calc(var(--base-w, 612) * var(--zoom, 1) * 1px);
   height: calc(var(--base-h, 792) * var(--zoom, 1) * 1px);
+  /* Ink multiplies into the page; this keeps the blend inside the sheet. */
+  isolation: isolate;
 }
 /* Holds the canvas and text layer together so one transform scales both during a pinch,
    keeping the selectable text lined up with the glyphs while the gesture is in flight. */
@@ -346,7 +348,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 /* Clicking picks a word, so say so. */
 #reader.tracking .page .textLayer { cursor: pointer; }
 
-.tracker-bar {
+.tracker-bar, .draw-bar {
   position: fixed;
   left: 50%; bottom: 20px;
   z-index: 30;
@@ -380,15 +382,127 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .tracker-speed { width: 120px; accent-color: var(--accent); }
 .tracker-wpm { font-size: 0.78rem; color: var(--text-dim); min-width: 5.2em; text-align: center; font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: reduce) {
-  .tracker-bar { animation: none; }
+  .tracker-bar, .draw-bar { animation: none; }
   .icon-btn.busy svg { animation: none; opacity: 0.6; }
 }
 @media (max-width: 640px) {
-  .tracker-bar { left: 16px; right: 16px; bottom: 12px; transform: none; justify-content: space-between; }
+  .tracker-bar, .draw-bar { left: 16px; right: 16px; bottom: 12px; transform: none; justify-content: space-between; }
   @keyframes tracker-bar-in { from { opacity: 0; } to { opacity: 1; } }
   .tracker-speed { flex: 1; min-width: 0; width: auto; }
   .tracker-hint { display: none; }
   .tracker-voice-pick { display: none; }
+}
+
+/* ---------------------------------- ink ---------------------------------- */
+
+/* Ink lies over the page and multiplies into it, so a highlighter tints the paper
+   without greying the words, and black ink stays black. On dark pages ink.js turns the
+   colours the way the canvas filter turns the page, and the blend becomes screen. The
+   layer ignores the pointer unless the pen is out, so reading and selecting are as before. */
+.ink-layer { fill: none; stroke: none; } /* the global svg rule would outline every stroke */
+.page .ink-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  mix-blend-mode: multiply;
+}
+#reader.pages-dark .ink-layer { mix-blend-mode: screen; }
+#reader.drawing .page .ink-layer,
+.pad-sheet .ink-layer {
+  pointer-events: auto;
+  touch-action: none; /* a finger or pen on the sheet draws rather than scrolls */
+  cursor: crosshair;
+}
+/* The circle is the eraser's reach: ERASER_PX in ink.js. */
+#reader.erasing .ink-layer {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18'%3E%3Ccircle cx='9' cy='9' r='8' fill='%23fff' fill-opacity='.55' stroke='%23555' stroke-width='1.2'/%3E%3C/svg%3E") 9 9, cell;
+}
+#reader.drawing .page { -webkit-user-select: none; user-select: none; }
+
+/* Above the scratch pad, which reaches the bottom of the screen on a phone. */
+.draw-bar { z-index: 45; }
+/* Both bars at once: the drawing tools sit above the tracker's. */
+#reader.tracking .draw-bar { bottom: 76px; }
+.bar-sep { flex: none; width: 1px; height: 20px; margin: 0 0.2rem; background: var(--border); }
+.draw-swatches { display: flex; align-items: center; gap: 0.1rem; }
+.draw-swatch {
+  display: grid; place-items: center;
+  width: 26px; height: 26px; padding: 0;
+  border: none; border-radius: 50%; background: transparent;
+}
+.draw-swatch::after {
+  content: "";
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--swatch);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18);
+}
+.draw-swatch[aria-checked="true"]::after { box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--text); }
+.draw-swatch:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.draw-size .size-dot { display: block; width: var(--dot, 7px); height: var(--dot, 7px); border-radius: 50%; background: currentColor; }
+.draw-size[data-size="fine"] { --dot: 4px; }
+.draw-size[data-size="bold"] { --dot: 11px; }
+.draw-status {
+  min-width: 4.2em; max-width: 15rem; padding: 0 0.35rem;
+  font-size: 0.75rem; line-height: 1.25; color: var(--text-dim);
+}
+.draw-status:empty { min-width: 0; padding: 0; }
+.draw-status.problem { color: var(--danger); }
+
+/* The scratch pad pushes the pages over from the right, as the outline does from the left. */
+#reader { --pad-w: min(400px, 36vw); }
+.pad {
+  flex: none;
+  width: var(--pad-w);
+  display: flex; flex-direction: column;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  z-index: 10;
+}
+.pad-head {
+  flex: none;
+  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+  padding: 0.35rem 0.4rem 0.35rem 0.9rem;
+  font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim);
+}
+.pad-head .text-btn { text-transform: none; letter-spacing: normal; }
+.pad-scroll {
+  flex: 1; min-height: 0;
+  overflow-y: auto; overscroll-behavior: contain;
+  padding: 0 0.75rem 0.75rem;
+}
+.pad-sheet {
+  background: #fff;
+  border-radius: 2px;
+  box-shadow: var(--shadow-md);
+  isolation: isolate;
+}
+/* Its height follows its viewBox, which ink.js grows as the notes do. */
+.pad-sheet .ink-layer { display: block; width: 100%; height: auto; mix-blend-mode: multiply; }
+#reader.pages-dark .pad-sheet { background: #1d1d1d; }
+#reader.pages-dark .pad-sheet .ink-layer { mix-blend-mode: screen; }
+
+@media (min-width: 641px) {
+  /* What floats in the right-hand corner moves aside for the pad. */
+  #reader.pad-open .panel,
+  #reader.pad-open .history,
+  #reader.pad-open .recaps,
+  #reader.pad-open .recap-range { right: calc(var(--pad-w) + 16px); }
+  #reader.pad-open .draw-bar { left: calc((100% - var(--pad-w)) / 2); }
+}
+@media (max-width: 640px) {
+  .pad {
+    position: fixed; top: var(--toolbar-h); bottom: 0; right: 0;
+    width: min(340px, 88vw);
+    box-shadow: var(--shadow-lg);
+    z-index: 40;
+  }
+  .pad-scroll { padding-bottom: 76px; } /* room to write above the drawing tools */
+  .bar-sep, .draw-status:not(.problem) { display: none; }
+  .draw-swatch { width: 22px; }
 }
 
 /* ---------------------------- selection actions ---------------------------- */
@@ -608,7 +722,9 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 @media (hover: none) { .history-item .delete-btn { opacity: 1; } }
 
 @media (max-width: 640px) {
-  .toolbar { gap: 0.25rem; padding: 0 0.35rem; }
+  /* More buttons than a phone is wide: the bar scrolls sideways rather than cutting them off. */
+  .toolbar { gap: 0.25rem; padding: 0 0.35rem; overflow-x: auto; scrollbar-width: none; }
+  .toolbar > * { flex: none; }
   .doc-title { display: none; }
   .panel, .panel.panel-wide, .history, .recaps { right: 8px; left: 8px; bottom: 8px; width: auto; }
   .recap-range { right: 8px; left: 8px; width: auto; }

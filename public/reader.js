@@ -3,6 +3,8 @@ import { api, fileUrl, getDocument } from './api.js';
 import { renderDiagram } from './diagram.js';
 import { createTracker, WPM_STEP } from './tracker.js';
 import { renderMindmap } from './mindmap.js';
+import { createInk, PAD, PAD_WIDTH } from './ink.js';
+import { SIZES } from './ink-format.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/build/pdf.worker.mjs';
 
@@ -22,6 +24,10 @@ const RENDER_BUDGET_PIXELS = 67_108_864;   // across every rendered page
 const SAVE_DEBOUNCE_MS = 700;
 const PROBE_RATIO = 0.35;        // "current page" = the one a third of the way down the viewport
 const OUTLINE_LANDING_PX = 16;   // a section jumped to from the outline lands this far below the top
+const PAD_ROOM = 0.5;            // the scratch pad keeps this much of a screen blank below the last note
+// Requests that outlive a closing tab may carry about 64 KB between them; this leaves
+// the progress beacon its share.
+const KEEPALIVE_BUDGET = 60_000;
 const NARROW = window.matchMedia('(max-width: 640px)');
 
 const el = {
@@ -84,6 +90,21 @@ const el = {
   trackerWpm: document.getElementById('tracker-wpm'),
   trackerHint: document.getElementById('tracker-hint'),
   trackerClose: document.getElementById('tracker-close'),
+  drawBtn: document.getElementById('draw-btn'),
+  padBtn: document.getElementById('pad-btn'),
+  drawBar: document.getElementById('draw-bar'),
+  drawTools: document.querySelectorAll('#draw-bar .draw-tool'),
+  drawSize: document.getElementById('draw-size'),
+  drawSwatches: document.getElementById('draw-swatches'),
+  drawUndo: document.getElementById('draw-undo'),
+  drawRedo: document.getElementById('draw-redo'),
+  drawStatus: document.getElementById('draw-status'),
+  drawClose: document.getElementById('draw-close'),
+  pad: document.getElementById('pad'),
+  padScroll: document.getElementById('pad-scroll'),
+  padSheet: document.getElementById('pad-sheet'),
+  padClear: document.getElementById('pad-clear'),
+  padClose: document.getElementById('pad-close'),
 };
 
 /** Everything about the document currently open. Reset by `close()`. */
@@ -91,6 +112,8 @@ let state = null;
 let onExit = () => {};
 /** The reading pacer. Outlives documents; `close()` switches it off. */
 let tracker = null;
+/** Pen, highlighter and scratch pad. Outlives documents too, so a save in flight can land. */
+let ink = null;
 
 const clamp = (n, lo, hi) => Math.min(Math.max(n, lo), hi);
 
@@ -232,12 +255,14 @@ async function renderPage(slot) {
     // tracks the committed zoom, never the live one.
     slot.el.style.setProperty('--scale-factor', renderZoom);
     slot.el.style.setProperty('--total-scale-factor', renderZoom);
-    slot.el.classList.remove('placeholder');
-    slot.el.replaceChildren(inner, tag);
 
     slot.inner = inner;
     slot.baseW = viewport.width / renderZoom;
     slot.baseH = viewport.height / renderZoom;
+    // Ink sits over the wrapper, not in it: the page box already follows the live zoom,
+    // so the strokes need no transform, and one layer serves every re-render.
+    slot.el.classList.remove('placeholder');
+    slot.el.replaceChildren(inner, ink.layer(slot.num, slot.baseW, slot.baseH), tag);
     slot.text = textLayer.textContentItemsStr.join(' ').replace(/\s+/g, ' ').trim();
     slot.textLayer = textLayer;
     slot.pixels = canvas.width * canvas.height;
@@ -261,6 +286,7 @@ function releasePage(slot) {
   slot.rendered = false;
   slot.el.classList.add('placeholder');
   slot.el.replaceChildren();
+  ink.release(slot.num);
   // Keep text: it is the context for explanations and costs nothing to hold.
 }
 
@@ -1210,6 +1236,7 @@ function setDarkPages(on, { remember = true } = {}) {
   el.darkPagesBtn.classList.toggle('active', on);
   el.darkPagesBtn.setAttribute('aria-pressed', String(on));
   el.darkPagesBtn.title = on ? 'Light pages' : 'Dark pages';
+  ink.setDark(on);
   if (!remember) return;
   try { localStorage.setItem('spr:dark-pages', on ? '1' : '0'); } catch { /* private mode */ }
 }
@@ -1218,6 +1245,8 @@ function setDarkPages(on, { remember = true } = {}) {
 
 function syncTrackerUi() {
   const on = tracker.on;
+  // The tracker and the pen both want clicks on the page, so only one is ever on.
+  if (on) ink?.setPageDrawing(false);
   el.reader.classList.toggle('tracking', on);
   el.trackerBtn.classList.toggle('active', on);
   el.trackerBtn.setAttribute('aria-pressed', String(on));
@@ -1328,6 +1357,89 @@ function syncOutline() {
   if (!el.outline.hidden) active.row.scrollIntoView({ block: 'nearest' });
 }
 
+/* --------------------------------- ink ------------------------------------ */
+
+const padOpen = () => !el.pad.hidden;
+
+function syncInkUi() {
+  const drawing = ink.pageDrawing;
+  if (drawing) tracker?.setOn(false);
+  el.reader.classList.toggle('drawing', drawing);
+  el.reader.classList.toggle('erasing', ink.tool === 'eraser');
+  el.drawBtn.classList.toggle('active', drawing);
+  el.drawBtn.setAttribute('aria-pressed', String(drawing));
+  // The tools are wanted for the pages and for the pad alike.
+  el.drawBar.hidden = !(drawing || padOpen());
+  el.drawClose.hidden = !drawing;
+
+  for (const b of el.drawTools) {
+    const on = b.dataset.tool === ink.tool;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', String(on));
+  }
+  // The swatches are the drawing tool's own colours, and stay put while erasing.
+  ink.palette.forEach((colour, i) => {
+    const b = el.drawSwatches.children[i];
+    b.style.setProperty('--swatch', colour.value);
+    b.title = colour.name;
+    b.setAttribute('aria-label', colour.name);
+    b.setAttribute('aria-checked', String(ink.tool !== 'eraser' && colour.value === ink.color));
+  });
+  el.drawSize.dataset.size = ink.size;
+  el.drawSize.title = `Thickness: ${ink.size} (1, 2, 3)`;
+  el.drawSize.setAttribute('aria-label', `Thickness: ${ink.size}`);
+  el.drawUndo.disabled = !ink.canUndo;
+  el.drawRedo.disabled = !ink.canRedo;
+  el.drawStatus.textContent = ink.status;
+  el.drawStatus.classList.toggle('problem', ink.failing);
+  if (padOpen()) sizePad();
+}
+
+/** Draw on the pages, or stop. Starting clears any selection, since a click now makes ink. */
+function setPageDrawing(on) {
+  if (on) {
+    hideExplainButton();
+    window.getSelection()?.removeAllRanges();
+  }
+  ink.setPageDrawing(on);
+}
+
+/**
+ * The pad is at least as tall as its panel, and keeps half a screen of blank paper below
+ * the lowest note, so there is always somewhere to carry on writing.
+ */
+function sizePad() {
+  const width = el.padSheet.clientWidth;
+  if (!width) return;
+  const visible = (el.padScroll.clientHeight * PAD_WIDTH) / width;
+  const height = Math.ceil(Math.max(visible, ink.extent(PAD) + visible * PAD_ROOM));
+  ink.layer(PAD, PAD_WIDTH, height);
+}
+
+function padPreferred() {
+  if (NARROW.matches) return false;
+  try {
+    return localStorage.getItem('spr:pad') === '1';
+  } catch {
+    return false;
+  }
+}
+
+function setPadOpen(open, { remember = true } = {}) {
+  el.pad.hidden = !open;
+  el.reader.classList.toggle('pad-open', open);
+  el.padBtn.classList.toggle('active', open);
+  el.padBtn.setAttribute('aria-pressed', String(open));
+  if (open) {
+    // A layer the last book left behind is gone from ink's keeping; this is the current one.
+    el.padSheet.replaceChildren(ink.layer(PAD, PAD_WIDTH, PAD_WIDTH));
+    ink.retry();
+  }
+  syncInkUi();
+  if (!remember || NARROW.matches) return;
+  try { localStorage.setItem('spr:pad', open ? '1' : '0'); } catch { /* private mode */ }
+}
+
 /* ------------------------------ open / close ------------------------------ */
 
 /** Persist the position even while the page is unloading, where fetch is unreliable. */
@@ -1381,6 +1493,7 @@ export async function openDocument(docId) {
     recapCut: null,
     recapRun: null,
   };
+  ink.open(docId);
 
   sizeAllSlots();
   updateZoomControls();
@@ -1396,6 +1509,7 @@ export async function openDocument(docId) {
   loadHistory();
   loadRecaps();
   loadOutline(pdf);
+  setPadOpen(padPreferred(), { remember: false });
 }
 
 export function close() {
@@ -1408,10 +1522,13 @@ export function close() {
     // Flush the position instead of losing the last few seconds of reading.
     const { page, offsetPct } = locate();
     flushProgress(state.docId, page, offsetPct);
+    ink.close(); // sends what is still unsaved, while the document is still known
     state.pdf.destroy?.();
     state = null;
   }
   tracker?.setOn(false);
+  setPadOpen(false, { remember: false });
+  el.padSheet.replaceChildren();
   el.viewer.replaceChildren();
   el.outlineTree.replaceChildren();
   el.outline.hidden = true;
@@ -1469,6 +1586,42 @@ export function initReader(exitHandler) {
   el.trackerSpeed.addEventListener('input', () => tracker.setWpm(Number(el.trackerSpeed.value)));
   // Buttons in the bar never take focus, so Space keeps meaning play/pause.
   for (const b of el.trackerBar.querySelectorAll('button')) b.addEventListener('mousedown', (e) => e.preventDefault());
+
+  /* --- ink --- */
+  ink = createInk({
+    onChange: syncInkUi,
+    // Cancelling the pointerdown keeps the browser from selecting text, and also keeps
+    // the mousedown handlers below from hearing about it, so their work is done here.
+    onStrokeStart: () => {
+      hideExplainButton();
+      el.recapRange.hidden = true;
+      window.getSelection()?.removeAllRanges();
+    },
+  });
+  // One button per colour; syncInkUi paints them for whichever tool is in hand.
+  ink.palette.forEach((_, i) => {
+    const b = document.createElement('button');
+    b.className = 'draw-swatch';
+    b.setAttribute('role', 'radio');
+    b.addEventListener('click', () => ink.setColor(ink.palette[i].value));
+    el.drawSwatches.append(b);
+  });
+  syncInkUi();
+  el.drawBtn.addEventListener('click', () => state && setPageDrawing(!ink.pageDrawing));
+  el.padBtn.addEventListener('click', () => state && setPadOpen(!padOpen()));
+  el.drawClose.addEventListener('click', () => ink.setPageDrawing(false));
+  el.padClose.addEventListener('click', () => setPadOpen(false));
+  el.padClear.addEventListener('click', () => {
+    if (confirm('Clear the scratch pad? Undo brings it back.')) ink.clear(PAD);
+  });
+  for (const b of el.drawTools) b.addEventListener('click', () => ink.setTool(b.dataset.tool));
+  el.drawSize.addEventListener('click', () => ink.cycleSize());
+  el.drawUndo.addEventListener('click', () => ink.undo());
+  el.drawRedo.addEventListener('click', () => ink.redo());
+  // As in the tracker bar: buttons never take focus, so the keys keep working.
+  for (const b of el.drawBar.querySelectorAll('button')) b.addEventListener('mousedown', (e) => e.preventDefault());
+  new ResizeObserver(() => { if (padOpen()) sizePad(); }).observe(el.padScroll);
+
   el.outlineBtn.addEventListener('click', () => state && setOutlineOpen(el.outline.hidden));
   setDarkPages(darkPagesPreferred(), { remember: false });
   el.darkPagesBtn.addEventListener('click', () => setDarkPages(!el.reader.classList.contains('pages-dark')));
@@ -1528,7 +1681,7 @@ export function initReader(exitHandler) {
 
   // Selection: capture it on mouseup, before clicking the button can clear it.
   el.container.addEventListener('mouseup', (e) => {
-    if (!state) return;
+    if (!state || ink.pageDrawing) return; // a press on the page is ink now
     setTimeout(() => {
       const sel = readSelection();
       if (!sel) {
@@ -1646,12 +1799,30 @@ export function initReader(exitHandler) {
       if (!el.panel.hidden) { el.panel.hidden = true; clearHighlight(); return; }
       if (!el.recaps.hidden) return void (el.recaps.hidden = true);
       if (!el.history.hidden) return void (el.history.hidden = true);
+      // The scratch pad stays, like the outline: it is part of the layout, not a popup.
+      if (ink.pageDrawing) return void ink.setPageDrawing(false);
       if (tracker.on) return void tracker.setOn(false);
       onExit();
     }
     if (e.target.closest?.('input, textarea, select')) return;
     const plain = !e.metaKey && !e.ctrlKey && !e.altKey;
+    const key = e.key.toLowerCase(); // Shift turns z into Z
     if ((e.key === 't' || e.key === 'T') && plain && !e.repeat) tracker.setOn(!tracker.on);
+    if (key === 'd' && plain && !e.repeat) setPageDrawing(!ink.pageDrawing);
+    if (key === 'n' && plain && !e.repeat) setPadOpen(!padOpen());
+    if (!el.drawBar.hidden) {
+      if (plain && !e.repeat) {
+        if (key === 'p') ink.setTool('pen');
+        if (key === 'h') ink.setTool('highlighter');
+        if (key === 'e') ink.setTool('eraser');
+        if (e.key === '1' || e.key === '2' || e.key === '3') ink.setSize(SIZES[Number(e.key) - 1]);
+      }
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && (key === 'z' || (key === 'y' && e.ctrlKey))) {
+        e.preventDefault();
+        if (key === 'y' || e.shiftKey) ink.redo();
+        else ink.undo();
+      }
+    }
     if (tracker.on && plain) {
       if (e.key === ' ') { e.preventDefault(); if (!e.repeat) tracker.togglePlay(); return; }
       if ((e.key === 'v' || e.key === 'V') && !e.repeat) tracker.toggleNarrate();
@@ -1678,10 +1849,23 @@ export function initReader(exitHandler) {
     if (moved) document.body.classList.remove('cursor-hidden');
   });
 
-  // Last chance to persist the page when the tab goes away.
+  // Last chance to persist the page when the tab goes away. The progress beacon goes
+  // first: it is tiny, and shares the browser's allowance for requests that outlive a page.
   window.addEventListener('pagehide', () => {
     if (!state) return;
     const { page, offsetPct } = locate();
     flushProgress(state.docId, page, offsetPct);
+    ink.flush({ keepalive: true, budget: KEEPALIVE_BUDGET });
+  });
+  // A closing tab is hidden before it is gone, and a hidden one may be discarded without
+  // ever coming back, so pending ink goes now, the way that survives either.
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) ink.flush({ keepalive: true, budget: KEEPALIVE_BUDGET });
+  });
+  // Everything else saves on the spot; only ink can be caught between saves.
+  window.addEventListener('beforeunload', (e) => {
+    if (!ink.unsaved) return;
+    e.preventDefault();
+    e.returnValue = '';
   });
 }
